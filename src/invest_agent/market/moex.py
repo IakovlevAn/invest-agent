@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from invest_agent.http import HttpResponse, HttpTransport, UrllibTransport
 
 ISS_BASE_URL = "https://iss.moex.com/iss"
+BONDIZATION_BASE_URL = f"{ISS_BASE_URL}/statistics/engines/stock/markets/bonds/bondization"
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 DESCRIPTION_COLUMNS = (
@@ -156,6 +157,54 @@ class MoexBondSnapshot:
     fetched_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class MoexBondCoupon:
+    coupon_date: date
+    record_date: date | None
+    start_date: date | None
+    face_value: Decimal | None
+    currency: str | None
+    value: Decimal | None
+    annual_percent: Decimal | None
+    value_rub: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class MoexBondAmortization:
+    amortization_date: date
+    face_value: Decimal | None
+    initial_face_value: Decimal | None
+    currency: str | None
+    value_percent: Decimal | None
+    value: Decimal | None
+    value_rub: Decimal | None
+    data_source: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MoexBondOffer:
+    offer_date: date | None
+    offer_start_date: date | None
+    offer_end_date: date | None
+    face_value: Decimal | None
+    currency: str | None
+    price_percent: Decimal | None
+    value: Decimal | None
+    agent: str | None
+    offer_type: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MoexBondSchedule:
+    secid: str
+    isin: str
+    coupons: tuple[MoexBondCoupon, ...]
+    amortizations: tuple[MoexBondAmortization, ...]
+    offers: tuple[MoexBondOffer, ...]
+    source_url: str
+    fetched_at: datetime
+
+
 class MoexIssClient:
     """Fetch normalized bond and emitter facts from official MOEX ISS."""
 
@@ -219,6 +268,75 @@ class MoexIssClient:
             source_url=url,
         )
 
+    def fetch_bond_schedule(self, secid: str) -> MoexBondSchedule:
+        normalized_secid = secid.strip().upper()
+        if not normalized_secid:
+            raise ValueError("secid is required")
+        source_url = self._bondization_url(normalized_secid)
+        initial = self._get_json(source_url, operation=f"bondization:{normalized_secid}")
+        coupon_rows = self._all_bondization_rows(
+            initial,
+            secid=normalized_secid,
+            table="coupons",
+        )
+        amortization_rows = self._all_bondization_rows(
+            initial,
+            secid=normalized_secid,
+            table="amortizations",
+        )
+        offer_rows = _table(initial, "offers")
+        isins = {
+            _required_text(row.get("isin"), f"bondization.{table}.isin").upper()
+            for table, rows in (
+                ("coupons", coupon_rows),
+                ("amortizations", amortization_rows),
+                ("offers", offer_rows),
+            )
+            for row in rows
+        }
+        if len(isins) != 1:
+            raise MoexContractError(
+                f"MOEX bondization {normalized_secid} must contain exactly one ISIN"
+            )
+        isin = next(iter(isins))
+        return MoexBondSchedule(
+            secid=normalized_secid,
+            isin=isin,
+            coupons=tuple(_coupon(row, normalized_secid, isin) for row in coupon_rows),
+            amortizations=tuple(
+                _amortization(row, normalized_secid, isin) for row in amortization_rows
+            ),
+            offers=tuple(_offer(row, normalized_secid, isin) for row in offer_rows),
+            source_url=source_url,
+            fetched_at=self._now(),
+        )
+
+    def _all_bondization_rows(
+        self,
+        initial: Mapping[str, Any],
+        *,
+        secid: str,
+        table: str,
+    ) -> list[dict[str, Any]]:
+        rows = _table(initial, table)
+        cursor = _table(initial, f"{table}.cursor")
+        if len(cursor) != 1:
+            raise MoexContractError(f"MOEX {table}.cursor must contain one row")
+        total = _integer(cursor[0].get("TOTAL"))
+        page_size = _integer(cursor[0].get("PAGESIZE"))
+        if total is None or total < 0 or page_size is None or page_size <= 0:
+            raise MoexContractError(f"MOEX {table}.cursor values are invalid")
+        for start in range(page_size, total, page_size):
+            page_url = self._bondization_url(secid, table=table, start=start)
+            page = self._get_json(
+                page_url,
+                operation=f"bondization:{secid}:{table}:{start}",
+            )
+            rows.extend(_table(page, table))
+        if len(rows) != total:
+            raise MoexContractError(f"MOEX {table} pagination item count mismatch")
+        return rows
+
     def _get_json(self, url: str, *, operation: str) -> Mapping[str, Any]:
         response: HttpResponse | None = None
         try:
@@ -272,6 +390,19 @@ class MoexIssClient:
             f"{urllib.parse.quote(board, safe='')}/securities/"
             f"{urllib.parse.quote(secid, safe='')}.json?{query}"
         )
+
+    @staticmethod
+    def _bondization_url(
+        secid: str,
+        *,
+        table: str | None = None,
+        start: int | None = None,
+    ) -> str:
+        query: dict[str, str | int] = {"iss.meta": "off"}
+        if table is not None and start is not None:
+            query[f"{table}.start"] = start
+        encoded = urllib.parse.urlencode(query)
+        return f"{BONDIZATION_BASE_URL}/{urllib.parse.quote(secid, safe='')}.json?{encoded}"
 
 
 def _description(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -355,9 +486,7 @@ def _market_data(
     market = _one_or_empty(market_rows, "marketdata")
     yields = _one_or_empty(yield_rows, "marketdata_yields")
     returned_boards = {
-        value
-        for value in (market.get("BOARDID"), yields.get("BOARDID"))
-        if value is not None
+        value for value in (market.get("BOARDID"), yields.get("BOARDID")) if value is not None
     }
     if returned_boards and returned_boards != {board}:
         raise MoexContractError(f"MOEX market board mismatch: expected {board}")
@@ -391,6 +520,66 @@ def _market_data(
         system_moment=_first_datetime(yields.get("SYSTIME"), market.get("SYSTIME")),
         source_url=source_url,
     )
+
+
+def _coupon(row: Mapping[str, Any], secid: str, isin: str) -> MoexBondCoupon:
+    _validate_bondization_identity(row, secid=secid, isin=isin, table="coupons")
+    return MoexBondCoupon(
+        coupon_date=_required_date(row.get("coupondate"), "coupons.coupondate"),
+        record_date=_date(row.get("recorddate")),
+        start_date=_date(row.get("startdate")),
+        face_value=_decimal(row.get("facevalue")),
+        currency=_optional_text(row.get("faceunit")),
+        value=_decimal(row.get("value")),
+        annual_percent=_decimal(row.get("valueprc")),
+        value_rub=_decimal(row.get("value_rub")),
+    )
+
+
+def _amortization(
+    row: Mapping[str, Any],
+    secid: str,
+    isin: str,
+) -> MoexBondAmortization:
+    _validate_bondization_identity(row, secid=secid, isin=isin, table="amortizations")
+    return MoexBondAmortization(
+        amortization_date=_required_date(row.get("amortdate"), "amortizations.amortdate"),
+        face_value=_decimal(row.get("facevalue")),
+        initial_face_value=_decimal(row.get("initialfacevalue")),
+        currency=_optional_text(row.get("faceunit")),
+        value_percent=_decimal(row.get("valueprc")),
+        value=_decimal(row.get("value")),
+        value_rub=_decimal(row.get("value_rub")),
+        data_source=_optional_text(row.get("data_source")),
+    )
+
+
+def _offer(row: Mapping[str, Any], secid: str, isin: str) -> MoexBondOffer:
+    _validate_bondization_identity(row, secid=secid, isin=isin, table="offers")
+    return MoexBondOffer(
+        offer_date=_date(row.get("offerdate")),
+        offer_start_date=_date(row.get("offerdatestart")),
+        offer_end_date=_date(row.get("offerdateend")),
+        face_value=_decimal(row.get("facevalue")),
+        currency=_optional_text(row.get("faceunit")),
+        price_percent=_decimal(row.get("price")),
+        value=_decimal(row.get("value")),
+        agent=_optional_text(row.get("agent")),
+        offer_type=_optional_text(row.get("offertype")),
+    )
+
+
+def _validate_bondization_identity(
+    row: Mapping[str, Any],
+    *,
+    secid: str,
+    isin: str,
+    table: str,
+) -> None:
+    returned_secid = _required_text(row.get("secid"), f"bondization.{table}.secid").upper()
+    returned_isin = _required_text(row.get("isin"), f"bondization.{table}.isin").upper()
+    if returned_secid != secid or returned_isin != isin:
+        raise MoexContractError(f"MOEX bondization {table} identity mismatch")
 
 
 def _table(payload: Mapping[str, Any], name: str) -> list[dict[str, Any]]:
@@ -475,6 +664,13 @@ def _date(value: Any) -> date | None:
         return date.fromisoformat(value)
     except ValueError as error:
         raise MoexContractError("MOEX date value is invalid") from error
+
+
+def _required_date(value: Any, field: str) -> date:
+    parsed = _date(value)
+    if parsed is None:
+        raise MoexContractError(f"MOEX {field} is required")
+    return parsed
 
 
 def _datetime(value: Any) -> datetime | None:

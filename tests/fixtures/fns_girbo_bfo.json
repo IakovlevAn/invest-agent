@@ -1,0 +1,47 @@
+[
+  {
+    "id": 29660814,
+    "period": "2025",
+    "actualBfoDate": "2026-04-30",
+    "hasAz": true,
+    "published": true,
+    "typeCorrections": [
+      {
+        "type": 12,
+        "correction": {
+          "bfoOrganizationInfo": {
+            "fullName": "ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ \"ВУШ\"",
+            "inn": "9717068640"
+          },
+          "balance": {
+            "current1250": 330829,
+            "current1410": 9287656,
+            "current1510": 4607881,
+            "current1300": 410758,
+            "current1600": 15994976,
+            "current1200": 4971431,
+            "current1500": 5382399
+          },
+          "financialResult": {
+            "current2110": 10694433,
+            "previous2110": 13196362,
+            "current2200": 917898,
+            "previous2200": 1618967,
+            "current2320": 352627,
+            "current2330": 2583863,
+            "current2300": -2549955,
+            "current2400": -2549955,
+            "previous2400": 360446
+          },
+          "fundsMovement": {
+            "current4100": 213787,
+            "current4200": -3333797,
+            "current4300": 174890
+          },
+          "correctionVersion": 1,
+          "auditReport": {"id": 57655545}
+        }
+      }
+    ]
+  }
+]
