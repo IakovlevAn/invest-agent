@@ -46,6 +46,7 @@ class ManagerPolicy:
     maximum_single_purchase_share_of_cash: Decimal
     minimum_cash_reserve_rub: Decimal = Decimal("0")
     concentration_trim_fraction: Decimal = Decimal("1")
+    maximum_noncritical_reduce_fraction: Decimal = Decimal("0.50")
     maximum_purchase_count: int = 8
     maximum_list_level_for_add: int = 2
     minimum_add_yield_percent: Decimal = Decimal("20")
@@ -88,6 +89,10 @@ class ManagerPolicy:
                 raw["concentration_trim_fraction"],
                 "manager.concentration_trim_fraction",
             ),
+            maximum_noncritical_reduce_fraction=_fraction(
+                raw["maximum_noncritical_reduce_fraction"],
+                "manager.maximum_noncritical_reduce_fraction",
+            ),
             maximum_purchase_count=_positive_int(
                 raw["maximum_purchase_count"],
                 "manager.maximum_purchase_count",
@@ -119,6 +124,14 @@ class ManagerPolicy:
         )
         if policy.minimum_add_yield_percent >= policy.maximum_add_yield_percent:
             raise ValueError("universe yield range is invalid")
+        if (
+            policy.speculative_reduce_fraction
+            > policy.maximum_noncritical_reduce_fraction
+        ):
+            raise ValueError(
+                "manager.speculative_reduce_fraction must not exceed "
+                "manager.maximum_noncritical_reduce_fraction"
+            )
         return policy
 
 
@@ -467,8 +480,8 @@ class PortfolioManager:
         has_credit_warning = False
         exits = [
             "подтверждённый дефолт или пропуск платежа",
-            "понижение рейтинга в спекулятивную зону или отзыв всех рейтингов",
-            "новый негативный пересмотр при ухудшении рыночной ликвидности",
+            "дальнейшее понижение, негативный прогноз или отзыв рейтинга",
+            "одновременное подтверждённое ухудшение ликвидности и кредитных метрик",
         ]
         if credit is None:
             action = ManagerAction.DO_NOT_ADD
@@ -493,6 +506,10 @@ class PortfolioManager:
                 action = ManagerAction.REDUCE_RISK
                 reasons.extend(signal.message for signal in warnings)
                 reasons.append("риск дефолта важнее высокой текущей доходности")
+                reasons.append(
+                    "один некритический рейтинговый сигнал означает пошаговое "
+                    "сокращение, а не автоматический полный выход"
+                )
             elif warnings:
                 action = ManagerAction.DO_NOT_ADD
                 reasons.extend(signal.message for signal in warnings)
@@ -663,7 +680,11 @@ class PortfolioManager:
                     initial,
                     action=ManagerAction.REDUCE_RISK,
                     recommended_reduce_rub=min(
-                        initial.market_value_rub,
+                        _round_down(
+                            initial.market_value_rub
+                            * self._manager_policy.maximum_noncritical_reduce_fraction,
+                            self._manager_policy.allocation_rounding_rub,
+                        ),
                         initial.recommended_reduce_rub + scaled_extra,
                     ),
                     reasons=tuple(

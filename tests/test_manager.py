@@ -353,6 +353,49 @@ class PortfolioManagerTests(unittest.TestCase):
         self.assertFalse(scenario.recommended)
         self.assertEqual(report.primary_action, "VERIFY_CRITICAL_FLAG_BEFORE_NEW_RISK")
 
+    def test_noncritical_speculative_and_concentration_cannot_sell_over_half(
+        self,
+    ) -> None:
+        speculative = bond(
+            "RU000A000001", emitter_id=1, value="100000", yield_percent="28"
+        )
+        audit, bonds, credit = inputs(
+            (speculative,),
+            (
+                rating(
+                    "RU000A000001",
+                    emitter_id=1,
+                    band=RatingBand.SPECULATIVE,
+                    signal=CreditSignal(
+                        "SPECULATIVE_RATING",
+                        SignalSeverity.WARNING,
+                        "рейтинг BB или ниже",
+                    ),
+                ),
+            ),
+        )
+        manager = PortfolioManager(
+            InvestmentPolicy.from_toml(POLICY_PATH),
+            replace(
+                manager_policy(),
+                concentration_trim_fraction=Decimal("0.50"),
+                maximum_noncritical_reduce_fraction=Decimal("0.50"),
+            ),
+            now=lambda: NOW,
+        )
+
+        report = manager.recommend(audit, bonds, credit)
+
+        self.assertEqual(
+            report.decisions[0].recommended_reduce_rub,
+            Decimal("50000"),
+        )
+        self.assertIn(
+            "один некритический рейтинговый сигнал означает пошаговое "
+            "сокращение, а не автоматический полный выход",
+            report.decisions[0].reasons,
+        )
+
     def test_issuer_limit_uses_all_issues_of_the_same_emitter(self) -> None:
         candidate = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")
         sibling = bond("RU000A000002", emitter_id=1, value="30000", yield_percent="18")

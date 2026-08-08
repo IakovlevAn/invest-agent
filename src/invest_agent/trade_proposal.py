@@ -283,14 +283,22 @@ class ExactTradeProposalBuilder:
         dirty_lot_value = dirty_unit_value * instrument.lot_size
         if dirty_lot_value <= 0:
             raise TradeProposalError("calculated dirty lot value is not positive")
-        requested_lots = int(
-            (target_amount_rub / dirty_lot_value).to_integral_value(rounding=ROUND_FLOOR)
-        )
-        if requested_lots <= 0:
-            raise TradeProposalError("target amount is smaller than one BCS lot")
 
         if side is Side.SELL:
             position = _find_position(snapshot, instrument)
+            if position.market_value_rub <= 0:
+                raise TradeProposalError("current position market value is not positive")
+            target_fraction = min(
+                Decimal("1"), target_amount_rub / position.market_value_rub
+            )
+            requested_units = position.quantity * target_fraction
+            requested_lots = int(
+                (requested_units / Decimal(instrument.lot_size)).to_integral_value(
+                    rounding=ROUND_FLOOR
+                )
+            )
+            if requested_lots <= 0:
+                raise TradeProposalError("target reduction is smaller than one BCS lot")
             available_lots = int(
                 (position.available_quantity / Decimal(instrument.lot_size)).to_integral_value(
                     rounding=ROUND_FLOOR
@@ -300,6 +308,13 @@ class ExactTradeProposalBuilder:
             if lots <= 0:
                 raise TradeProposalError("the portfolio has no unlocked full lot to sell")
         else:
+            requested_lots = int(
+                (target_amount_rub / dirty_lot_value).to_integral_value(
+                    rounding=ROUND_FLOOR
+                )
+            )
+            if requested_lots <= 0:
+                raise TradeProposalError("target amount is smaller than one BCS lot")
             affordable_lots = int(
                 (snapshot.cash_rub / dirty_lot_value).to_integral_value(rounding=ROUND_FLOOR)
             )

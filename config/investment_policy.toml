@@ -54,7 +54,10 @@ near_term_event_days = 365
 [manager]
 # Fast recommendation hot path. These are allocation guards, not trade orders.
 max_bond_issuer_share_after_add = 0.15
-speculative_reduce_fraction = 1.00
+# A speculative rating is a risk signal, not proof of imminent default. Reduce
+# in stages and require separate critical evidence before considering a full exit.
+speculative_reduce_fraction = 0.50
+maximum_noncritical_reduce_fraction = 0.50
 concentration_trim_fraction = 0.50
 minimum_allocation_rub = 5000
 allocation_rounding_rub = 100

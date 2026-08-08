@@ -111,7 +111,8 @@ class MultiFakeBcsClient(FakeBcsClient):
 
 
 def manager_report_and_snapshot():
-    record = bond(ISIN, emitter_id=2, value="20000", yield_percent="28")
+    record = bond(ISIN, emitter_id=2, value="21000", yield_percent="28")
+    record = replace(record, position=replace(record.position, quantity=Decimal("21")))
     audit, bonds, credit = inputs(
         (record,),
         (
@@ -152,9 +153,11 @@ def manager_report_and_snapshot():
 class ExactTradeProposalTests(unittest.TestCase):
     def test_builds_one_digest_for_multiple_exact_orders(self) -> None:
         second_isin = "RU000A000003"
-        records = (
-            bond(ISIN, emitter_id=2, value="20000", yield_percent="28"),
-            bond(second_isin, emitter_id=3, value="20000", yield_percent="27"),
+        first = bond(ISIN, emitter_id=2, value="20000", yield_percent="28")
+        second = bond(second_isin, emitter_id=3, value="20000", yield_percent="27")
+        records = tuple(
+            replace(record, position=replace(record.position, quantity=Decimal("20")))
+            for record in (first, second)
         )
         audit, bonds, credit = inputs(
             records,

@@ -72,7 +72,12 @@ For “what should I buy/sell?”, “where should I invest 50,000 ₽?” or si
 2. If it raises a critical or ambiguous issuer signal, investigate only that
    issuer with the relevant primary evidence. Do not download broad disclosure
    archives for a routine portfolio answer.
-3. Apply deterministic policy checks before presenting a proposal.
+3. Apply deterministic policy checks before presenting a proposal. Treat one
+   non-critical speculative rating as a staged risk reduction, not proof of an
+   imminent default: the first recommendation must not sell more than the
+   configured non-critical fraction, including any concentration trim. Consider
+   a full exit only after a separate issuer review confirms a critical event or
+   multiple independent deterioration signals. State those triggers explicitly.
 4. Give a concise Russian response with:
    - decision and amount;
    - effect on portfolio risk and expected return;
