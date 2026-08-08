@@ -44,11 +44,13 @@ class ManagerPolicy:
     minimum_allocation_rub: Decimal
     allocation_rounding_rub: Decimal
     maximum_single_purchase_share_of_cash: Decimal
+    maximum_list_level_for_add: int = 2
 
     @classmethod
     def from_toml(cls, path: str | Path) -> ManagerPolicy:
         with Path(path).open("rb") as source:
-            raw = tomllib.load(source)["manager"]
+            document = tomllib.load(source)
+        raw = document["manager"]
         policy = cls(
             max_bond_issuer_share_after_add=_fraction(
                 raw["max_bond_issuer_share_after_add"],
@@ -69,6 +71,10 @@ class ManagerPolicy:
             maximum_single_purchase_share_of_cash=_fraction(
                 raw["maximum_single_purchase_share_of_cash"],
                 "manager.maximum_single_purchase_share_of_cash",
+            ),
+            maximum_list_level_for_add=_positive_int(
+                document["universe"]["maximum_list_level"],
+                "universe.maximum_list_level",
             ),
         )
         return policy
@@ -207,6 +213,7 @@ class PortfolioManagerReport:
                 "rating bands are diagnostic classes, not default probabilities",
                 "amounts are allocation targets, not executable orders or lot calculations",
                 "new candidates require BCS availability and exact lot-price verification",
+                "additions to existing bonds obey the configured maximum listing level",
                 "stocks remain unchanged until a separate superior-alternative case is proven",
             ],
             "trade_gate": {
@@ -377,6 +384,15 @@ class PortfolioManager:
             elif not current or band is None or band is RatingBand.UNRATED:
                 action = ManagerAction.DO_NOT_ADD
                 reasons.append("нет поддержанного текущего рейтингового класса")
+            elif (
+                record.moex.facts.list_level is None
+                or record.moex.facts.list_level
+                > self._manager_policy.maximum_list_level_for_add
+            ):
+                action = ManagerAction.DO_NOT_ADD
+                reasons.append(
+                    "уровень листинга выпуска выше допуска для новых покупок"
+                )
             elif comparable_yield is None:
                 action = ManagerAction.HOLD
                 reasons.append("доходность флоатера требует отдельного сценария ставки")
@@ -874,6 +890,12 @@ def _positive_decimal(value: Any, field: str) -> Decimal:
     if not result.is_finite() or result <= 0:
         raise ValueError(f"{field} must be positive")
     return result
+
+
+def _positive_int(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
 
 
 def _round_down(value: Decimal, step: Decimal) -> Decimal:

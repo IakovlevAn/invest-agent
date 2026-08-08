@@ -283,6 +283,34 @@ class PortfolioManagerTests(unittest.TestCase):
         self.assertTrue(scenario.recommended)
         self.assertEqual(scenario.invested_cash_rub, Decimal("5800"))
 
+    def test_third_level_existing_bond_cannot_be_add_candidate(self) -> None:
+        candidate = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="29")
+        candidate = replace(
+            candidate,
+            moex=replace(
+                candidate.moex,
+                facts=replace(candidate.moex.facts, list_level=3),
+            ),
+        )
+        stabilizer = bond("RU000A000002", emitter_id=2, value="90000", yield_percent="18")
+        audit, bonds, credit = inputs(
+            (candidate, stabilizer),
+            (
+                rating("RU000A000001", emitter_id=1, band=RatingBand.ADEQUATE),
+                rating("RU000A000002", emitter_id=2, band=RatingBand.HIGHEST),
+            ),
+        )
+
+        report = self.manager().recommend(audit, bonds, credit)
+        decision = next(item for item in report.decisions if item.ticker == "RU000A000001")
+
+        self.assertEqual(decision.action, ManagerAction.DO_NOT_ADD)
+        self.assertEqual(decision.recommended_add_rub, Decimal("0"))
+        self.assertIn(
+            "уровень листинга выпуска выше допуска для новых покупок",
+            decision.reasons,
+        )
+
     def test_critical_flag_blocks_invest_scenario_and_speculative_is_reduce(self) -> None:
         candidate = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")
         critical = bond("RU000A000002", emitter_id=2, value="30000", yield_percent="26")
