@@ -98,12 +98,21 @@ security units, limit price, price step, estimated RUB cash including accrued
 interest, quote observation time, client-side order validity, proposal expiry
 and the full 64-character SHA-256 digest.
 
-Confirmation is a separate Codex turn and is valid only when the user's message
-equals `ПОДТВЕРЖДАЮ ПАКЕТ <full digest>` exactly. Never infer it from “давай”,
-“ок”, “согласен”, or approval of the analysis. Run the internal `confirm` command
-only after that exact message. Then run the internal
-`execute --digest <same full digest>` command. Never pass arbitrary instrument,
-side, quantity or price arguments to the executor.
+Confirmation is a separate Codex turn. The user does not type or copy the digest:
+Codex binds their semantic confirmation to the single active package internally.
+Accept only wording that explicitly authorizes the displayed trade package, such
+as “подтверждаю выставление всего предложенного пакета заявок”, “покупаем этот
+пакет” or “продаём предложенный пакет”. A bare “давай”, “ок”, “готово”, a
+question, conditional language, or approval of the analysis is not confirmation.
+If wording is ambiguous, ask one short confirmation question and do not run any
+trading command.
+
+After an unambiguous semantic confirmation, run internal `confirm --digest
+<active digest> --user-confirmation <user message>`, then
+`execute --digest <same digest>`. Never pass arbitrary instrument, side, quantity
+or price arguments to the executor. The deterministic gate rejects a digest that
+is not the single active package and rejects negative, conditional, question-like
+or side-mismatched wording.
 The one-time confirmation receipt has state
 `APPROVED_AWAITING_ISOLATED_EXECUTOR` until execution begins.
 
@@ -129,8 +138,8 @@ client-side validity is not a native BCS time-in-force field; the executor must
 remain running or be reconciled to cancel the remaining order by that deadline.
 
 The trade-token validation command is not a trade confirmation and must never
-trigger `confirm` or `execute`. “Готово”, “давай”, or successful token setup does
-not authorize an order.
+trigger `confirm` or `execute`. “Готово”, bare “давай”, or successful token setup
+does not authorize an order.
 
 ## Read-only questions
 

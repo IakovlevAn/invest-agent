@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import tempfile
 import tomllib
+import unicodedata
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -71,6 +74,8 @@ class ConfirmationReceipt:
     proposal_id: str
     state: str
     orders_created: bool
+    confirmation_mode: str = "EXACT_DIGEST_TEXT"
+    confirmation_evidence_digest: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +87,8 @@ class ConfirmationReceipt:
             "approval_expires_at": self.approval.expires_at.isoformat(),
             "state": self.state,
             "orders_created": self.orders_created,
+            "confirmation_mode": self.confirmation_mode,
+            "confirmation_evidence_digest": self.confirmation_evidence_digest,
         }
 
 
@@ -343,6 +350,7 @@ class LocalTradeGateStore:
         self.root = root.resolve()
         self.pending = self.root / "pending"
         self.approved = self.root / "approved"
+        self.active = self.root / "active.json"
 
     def save_proposal(self, proposal: ProposalBundle) -> Path:
         payload = {
@@ -352,6 +360,14 @@ class LocalTradeGateStore:
         }
         path = self.pending / f"{proposal.digest}.json"
         self._atomic_json(path, payload)
+        self._atomic_json(
+            self.active,
+            {
+                "digest": proposal.digest,
+                "proposal_id": proposal.proposal_id,
+                "state": "ACTIVE_PENDING_CONFIRMATION",
+            },
+        )
         return path
 
     def load_proposal(self, digest: str) -> ProposalBundle:
@@ -399,6 +415,14 @@ class LocalTradeGateStore:
                 proposal_id=str(payload["proposal_id"]),
                 state=str(payload["state"]),
                 orders_created=bool(payload["orders_created"]),
+                confirmation_mode=str(
+                    payload.get("confirmation_mode", "EXACT_DIGEST_TEXT")
+                ),
+                confirmation_evidence_digest=(
+                    None
+                    if payload.get("confirmation_evidence_digest") is None
+                    else str(payload["confirmation_evidence_digest"])
+                ),
             )
         except (KeyError, TypeError, ValueError) as error:
             raise TradeProposalError("stored approval receipt is invalid") from error
@@ -408,10 +432,39 @@ class LocalTradeGateStore:
             raise TradeProposalError("stored approval is not executable")
         if receipt.orders_created:
             raise TradeProposalError("stored approval unexpectedly claims created orders")
+        if receipt.confirmation_mode not in {"EXACT_DIGEST_TEXT", "CODEX_SEMANTIC"}:
+            raise TradeProposalError("stored approval confirmation mode is invalid")
+        evidence = receipt.confirmation_evidence_digest
+        if evidence is not None and (
+            len(evidence) != 64
+            or any(character not in "0123456789abcdef" for character in evidence)
+        ):
+            raise TradeProposalError("stored approval confirmation evidence is invalid")
+        if receipt.confirmation_mode == "CODEX_SEMANTIC" and evidence is None:
+            raise TradeProposalError("semantic approval has no confirmation evidence")
         return receipt
 
     def approval_exists(self, digest: str) -> bool:
         return (self.approved / f"{_validated_digest(digest)}.json").is_file()
+
+    def active_unapproved_digests(self, *, now: datetime) -> tuple[str, ...]:
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("now must be timezone-aware")
+        try:
+            pointer = json.loads(self.active.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return ()
+        except (OSError, json.JSONDecodeError) as error:
+            raise TradeProposalError("active proposal pointer is invalid") from error
+        if not isinstance(pointer, dict) or not isinstance(pointer.get("digest"), str):
+            raise TradeProposalError("active proposal pointer is invalid")
+        digest = pointer["digest"]
+        proposal = self.load_proposal(digest)
+        if pointer.get("proposal_id") != proposal.proposal_id:
+            raise TradeProposalError("active proposal pointer does not match")
+        if now >= proposal.expires_at or self.approval_exists(digest):
+            return ()
+        return (digest,)
 
     @staticmethod
     def _atomic_json(
@@ -465,25 +518,24 @@ class CodexConfirmationGate:
         self._approval_ttl_seconds = approval_ttl_seconds
         self._now = now or (lambda: datetime.now(tz=UTC))
 
-    @staticmethod
-    def required_text(proposal_digest: str) -> str:
-        return f"ПОДТВЕРЖДАЮ ПАКЕТ {proposal_digest}"
-
-    def confirm(
+    def confirm_semantic(
         self,
         *,
         proposal_digest: str,
-        confirmation_text: str,
-        approved_by: str = "portfolio-owner-via-codex",
+        user_message: str,
+        approved_by: str = "portfolio-owner-via-codex-semantic",
     ) -> ConfirmationReceipt:
         digest = _validated_digest(proposal_digest)
-        required = self.required_text(digest)
-        if confirmation_text != required:
-            raise ApprovalViolation("confirmation text does not match the exact proposal digest")
+        normalized_message = validate_semantic_confirmation(user_message)
         if self._store.approval_exists(digest):
             raise ApprovalViolation("proposal was already confirmed")
         proposal = self._store.load_proposal(digest)
+        _validate_semantic_sides(normalized_message, proposal)
         now = self._now()
+        if self._store.active_unapproved_digests(now=now) != (digest,):
+            raise ApprovalViolation(
+                "semantic confirmation requires exactly one active proposal"
+            )
         if now >= proposal.expires_at:
             raise ApprovalViolation("proposal has expired")
         approval_expires = min(
@@ -503,6 +555,10 @@ class CodexConfirmationGate:
             proposal_id=proposal.proposal_id,
             state="APPROVED_AWAITING_ISOLATED_EXECUTOR",
             orders_created=False,
+            confirmation_mode="CODEX_SEMANTIC",
+            confirmation_evidence_digest=_confirmation_evidence_digest(
+                normalized_message
+            ),
         )
         self._store.save_approval(receipt)
         return receipt
@@ -511,13 +567,87 @@ class CodexConfirmationGate:
 def proposal_as_dict(proposal: ProposalBundle) -> dict[str, Any]:
     payload = proposal.canonical_payload()
     payload["proposal_digest"] = proposal.digest
-    payload["required_confirmation_text"] = CodexConfirmationGate.required_text(
-        proposal.digest
-    )
+    payload["confirmation_mode"] = "CODEX_SEMANTIC"
+    side_examples = {
+        frozenset({Side.BUY}): "Да, покупаем этот пакет",
+        frozenset({Side.SELL}): "Да, продаем этот пакет",
+    }
+    payload["confirmation_examples"] = [
+        "Подтверждаю выставление всего предложенного пакета заявок",
+    ]
+    side_example = side_examples.get(frozenset(order.side for order in proposal.orders))
+    if side_example is not None:
+        payload["confirmation_examples"].append(side_example)
     payload["state"] = "PENDING_EXPLICIT_CONFIRMATION"
     payload["orders_created"] = False
     payload["broker_executor_available"] = True
     return payload
+
+
+def validate_semantic_confirmation(user_message: str) -> str:
+    if not isinstance(user_message, str):
+        raise ApprovalViolation("semantic confirmation must be text")
+    normalized = unicodedata.normalize("NFKC", user_message).casefold().replace("ё", "е")
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized or len(normalized) > 500:
+        raise ApprovalViolation("semantic confirmation is empty or unexpectedly long")
+    if "?" in normalized:
+        raise ApprovalViolation("a question cannot authorize a trade")
+    if re.search(r"\d", normalized):
+        raise ApprovalViolation(
+            "semantic confirmation cannot override numeric package parameters"
+        )
+    if re.search(
+        r"\b(?:не|нет|без|но|кроме|часть\w*|половин\w*|друг\w*|услов\w*|"
+        r"отмен\w*|стоп|позже|потом|после|пока|если|когда|возможн\w*|"
+        r"наверн\w*|дума\w*|можно|хочу)\b",
+        normalized,
+    ):
+        raise ApprovalViolation("ambiguous or negative wording cannot authorize a trade")
+    confirmation = re.search(
+        r"\b(?:подтвержда\w*|одобря\w*|соглас(?:ен|на|ны))\b",
+        normalized,
+    )
+    action = re.search(
+        r"\b(?:выстав\w*|исполн\w*|покуп\w*|прода\w*|соверш\w*|отправ\w*)\b",
+        normalized,
+    )
+    trade_object = re.search(
+        r"\b(?:пакет\w*|заяв\w*|сделк\w*|покупк\w*|продаж\w*|ордер\w*)\b",
+        normalized,
+    )
+    if trade_object is None or (confirmation is None and action is None):
+        raise ApprovalViolation(
+            "semantic confirmation must explicitly authorize the proposed trade package"
+        )
+    return normalized
+
+
+def _confirmation_evidence_digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _validate_semantic_sides(
+    normalized_message: str,
+    proposal: ProposalBundle,
+) -> None:
+    proposal_sides = {order.side for order in proposal.orders}
+    mentions_buy = re.search(r"\bпокуп\w*", normalized_message) is not None
+    mentions_sell = re.search(r"\b(?:прода\w*|продаж\w*)", normalized_message) is not None
+    mentioned_sides = {
+        side
+        for side, mentioned in (
+            (Side.BUY, mentions_buy),
+            (Side.SELL, mentions_sell),
+        )
+        if mentioned
+    }
+    if not mentioned_sides:
+        return
+    if mentioned_sides != proposal_sides:
+        raise ApprovalViolation(
+            "semantic confirmation side does not match the whole proposed package"
+        )
 
 
 def _manager_target(

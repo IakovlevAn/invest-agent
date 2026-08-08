@@ -126,10 +126,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     confirm = commands.add_parser(
         "confirm",
-        help="Record an exact one-time Codex confirmation without sending an order",
+        help="Record an explicit semantic Codex confirmation without sending an order",
     )
     confirm.add_argument("--digest", required=True, help="Full SHA-256 proposal digest")
-    confirm.add_argument("--confirmation-text", required=True)
+    confirm.add_argument("--user-confirmation", required=True)
     confirm.add_argument("--format", choices=("text", "json"), default="text")
 
     token_check = commands.add_parser(
@@ -239,9 +239,9 @@ def main(argv: list[str] | None = None) -> int:
             receipt = CodexConfirmationGate(
                 store=LocalTradeGateStore(TRADE_GATE_ROOT),
                 approval_ttl_seconds=proposal_policy.proposal_ttl_seconds,
-            ).confirm(
+            ).confirm_semantic(
                 proposal_digest=args.digest,
-                confirmation_text=args.confirmation_text,
+                user_message=args.user_confirmation,
             )
             if args.format == "json":
                 print(json.dumps(receipt.as_dict(), ensure_ascii=False, indent=2))
@@ -340,13 +340,17 @@ def main(argv: list[str] | None = None) -> int:
                         f"расчётно {order.estimated_cash_rub} ₽"
                         for order in proposal.orders
                     )
+                    confirmation_examples = "» или «".join(
+                        payload["confirmation_examples"]
+                    )
                     print(
                         "Точный пакет лимитных заявок "
                         "сформирован.\n"
                         f"{order_lines}\n"
                         f"Digest: {proposal.digest}\n"
-                        "Для подтверждения: "
-                        f"{payload['required_confirmation_text']}\n"
+                        "Для подтверждения ответь обычной однозначной фразой, "
+                        f"например: «{confirmation_examples}». "
+                        "Digest вводить не нужно.\n"
                         "Заявки в БКС не отправлены."
                     )
                 return 0

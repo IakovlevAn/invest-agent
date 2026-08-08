@@ -31,13 +31,17 @@ class LocalEnvTests(unittest.TestCase):
                 "confirm",
                 "--digest",
                 "a" * 64,
-                "--confirmation-text",
-                f"ПОДТВЕРЖДАЮ ПАКЕТ {'a' * 64}",
+                "--user-confirmation",
+                "Подтверждаю выставление предложенных заявок",
             ]
         )
 
         self.assertEqual(proposal.side, "BUY")
         self.assertEqual(confirmation.digest, "a" * 64)
+        self.assertEqual(
+            confirmation.user_confirmation,
+            "Подтверждаю выставление предложенных заявок",
+        )
 
         token_check = build_parser().parse_args(["trade-token-check"])
         execution = build_parser().parse_args(["execute", "--digest", "a" * 64])

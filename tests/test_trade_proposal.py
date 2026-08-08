@@ -233,7 +233,7 @@ class ExactTradeProposalTests(unittest.TestCase):
         self.assertEqual(order.order_valid_until, NOW + timedelta(hours=1))
         self.assertEqual(len(proposal.digest), 64)
 
-    def test_codex_confirmation_requires_exact_full_digest_and_sends_no_order(self) -> None:
+    def test_codex_confirmation_requires_explicit_semantics_and_is_one_time(self) -> None:
         policy, report, snapshot = manager_report_and_snapshot()
         proposal = ExactTradeProposalBuilder(
             client=FakeBcsClient(),
@@ -255,23 +255,127 @@ class ExactTradeProposalTests(unittest.TestCase):
                 approval_ttl_seconds=600,
                 now=lambda: NOW + timedelta(minutes=1),
             )
-            with self.assertRaisesRegex(ApprovalViolation, "exact proposal digest"):
-                gate.confirm(
+            with self.assertRaisesRegex(ApprovalViolation, "explicitly authorize"):
+                gate.confirm_semantic(
                     proposal_digest=proposal.digest,
-                    confirmation_text="давай",
+                    user_message="давай",
                 )
 
-            receipt = gate.confirm(
+            receipt = gate.confirm_semantic(
                 proposal_digest=proposal.digest,
-                confirmation_text=gate.required_text(proposal.digest),
+                user_message=(
+                    "Подтверждаю выставление всего предложенного пакета заявок"
+                ),
             )
 
             self.assertEqual(receipt.state, "APPROVED_AWAITING_ISOLATED_EXECUTOR")
             self.assertFalse(receipt.orders_created)
             with self.assertRaisesRegex(ApprovalViolation, "already confirmed"):
-                gate.confirm(
+                gate.confirm_semantic(
                     proposal_digest=proposal.digest,
-                    confirmation_text=gate.required_text(proposal.digest),
+                    user_message=(
+                        "Подтверждаю выставление всего предложенного пакета заявок"
+                    ),
+                )
+
+    def test_semantic_confirmation_needs_no_digest_and_binds_active_package(self) -> None:
+        policy, report, snapshot = manager_report_and_snapshot()
+        proposal = ExactTradeProposalBuilder(
+            client=FakeBcsClient(),
+            investment_policy=policy,
+            proposal_policy=TradeProposalPolicy.from_toml(POLICY_PATH),
+            now=lambda: NOW,
+        ).build_manager_action(
+            report=report,
+            snapshot=snapshot,
+            access_token=object(),
+            isin=ISIN,
+            side=Side.SELL,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalTradeGateStore(Path(directory))
+            store.save_proposal(proposal)
+            gate = CodexConfirmationGate(
+                store=store,
+                approval_ttl_seconds=600,
+                now=lambda: NOW + timedelta(minutes=1),
+            )
+
+            receipt = gate.confirm_semantic(
+                proposal_digest=proposal.digest,
+                user_message="Да, продаем этот пакет",
+            )
+
+        self.assertEqual(receipt.confirmation_mode, "CODEX_SEMANTIC")
+        self.assertIsNotNone(receipt.confirmation_evidence_digest)
+        self.assertNotIn(proposal.digest, "Да, продаем этот пакет")
+
+    def test_semantic_confirmation_rejects_acknowledgement_question_and_wrong_side(self) -> None:
+        policy, report, snapshot = manager_report_and_snapshot()
+        proposal = ExactTradeProposalBuilder(
+            client=FakeBcsClient(),
+            investment_policy=policy,
+            proposal_policy=TradeProposalPolicy.from_toml(POLICY_PATH),
+            now=lambda: NOW,
+        ).build_manager_action(
+            report=report,
+            snapshot=snapshot,
+            access_token=object(),
+            isin=ISIN,
+            side=Side.SELL,
+        )
+        for message in (
+            "давай",
+            "подтверждаю анализ",
+            "продаем этот пакет?",
+            "покупаем пакет",
+            "подтверждаю пакет при условии другой цены",
+            "подтверждаю продажу пакета на 5 лотов",
+        ):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                store = LocalTradeGateStore(Path(directory))
+                store.save_proposal(proposal)
+                gate = CodexConfirmationGate(
+                    store=store,
+                    approval_ttl_seconds=600,
+                    now=lambda: NOW + timedelta(minutes=1),
+                )
+
+                with self.assertRaises(ApprovalViolation):
+                    gate.confirm_semantic(
+                        proposal_digest=proposal.digest,
+                        user_message=message,
+                    )
+
+    def test_semantic_confirmation_targets_only_latest_active_package(self) -> None:
+        policy, report, snapshot = manager_report_and_snapshot()
+        first = ExactTradeProposalBuilder(
+            client=FakeBcsClient(),
+            investment_policy=policy,
+            proposal_policy=TradeProposalPolicy.from_toml(POLICY_PATH),
+            now=lambda: NOW,
+        ).build_manager_action(
+            report=report,
+            snapshot=snapshot,
+            access_token=object(),
+            isin=ISIN,
+            side=Side.SELL,
+        )
+        second = replace(first, proposal_id="newer-proposal")
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalTradeGateStore(Path(directory))
+            store.save_proposal(first)
+            store.save_proposal(second)
+            gate = CodexConfirmationGate(
+                store=store,
+                approval_ttl_seconds=600,
+                now=lambda: NOW + timedelta(minutes=1),
+            )
+
+            with self.assertRaisesRegex(ApprovalViolation, "active proposal"):
+                gate.confirm_semantic(
+                    proposal_digest=first.digest,
+                    user_message="Да, продаем этот пакет",
                 )
 
     def test_caps_lots_to_displayed_units_at_limit_price(self) -> None:

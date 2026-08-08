@@ -32,7 +32,9 @@ class CodexSkillContractTests(unittest.TestCase):
         self.assertIn("Never infer trade approval", self.project_rules)
 
     def test_skill_requires_exact_one_time_codex_confirmation(self) -> None:
-        self.assertIn("ПОДТВЕРЖДАЮ ПАКЕТ <full digest>", self.skill)
+        self.assertIn("The user does not type or copy the digest", self.skill)
+        self.assertIn("single active package", self.skill)
+        self.assertIn("--user-confirmation", self.skill)
         self.assertIn("APPROVED_AWAITING_ISOLATED_EXECUTOR", self.skill)
         self.assertIn("quote/order book are fresh", self.skill)
 

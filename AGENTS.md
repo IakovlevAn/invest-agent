@@ -16,10 +16,13 @@ security, market, recommendation, rebalance or trade-related request.
 - An order may be sent only after a separate one-time Codex confirmation
   bound to the full immutable proposal digest: instrument, board, side, lots,
   limit price, quote time and validity.
-- Run `confirm` and then `execute` only after the user's entire message exactly
-  equals `ПОДТВЕРЖДАЮ ПАКЕТ <full 64-character digest>`. Execute that digest only.
-- Never infer trade approval from phrases such as “давай”, “ок”, “согласен” or
-  approval of an analysis plan.
+- The user does not need to type the digest. Accept a separate semantic
+  confirmation only when it unambiguously authorizes the displayed trade package,
+  for example “подтверждаю выставление предложенных заявок” or “покупаем этот
+  пакет”. Codex must bind it internally to the single active digest, run `confirm`,
+  and then `execute` that same digest only.
+- Never infer trade approval from a bare “давай”, “ок”, “готово”, a question,
+  conditional wording or approval of an analysis/recommendation.
 - Before submission, recheck the current portfolio, BCS catalogue, quote,
   session and displayed order-book quantity. Any mismatch blocks the whole
   package and requires a fresh proposal and confirmation.

@@ -285,9 +285,11 @@ class ExactPackageExecutorTests(unittest.TestCase):
                 store=gate_store,
                 approval_ttl_seconds=600,
                 now=(clock.now if clock else lambda: NOW),
-            ).confirm(
+            ).confirm_semantic(
                 proposal_digest=package.digest,
-                confirmation_text=CodexConfirmationGate.required_text(package.digest),
+                user_message=(
+                    "Подтверждаю выставление всего предложенного пакета заявок"
+                ),
             )
         events: list[str] = []
         trade = trade_client or FakeTradeClient(events)
