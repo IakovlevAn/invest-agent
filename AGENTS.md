@@ -11,12 +11,21 @@ security, market, recommendation, rebalance or trade-related request.
 
 - Never ask the user to paste BCS tokens, API keys or approval secrets into chat.
 - The analytical process uses only a BCS read-only token.
-- Current code has no trade executor. Never claim that a real order was sent.
-- A future order may be sent only after a separate one-time Codex confirmation
+- The isolated executor is the only component allowed to load the separate BCS
+  trade token. Never expose that token to recommendation or proposal commands.
+- An order may be sent only after a separate one-time Codex confirmation
   bound to the full immutable proposal digest: instrument, board, side, lots,
   limit price, quote time and validity.
+- Run `confirm` and then `execute` only after the user's entire message exactly
+  equals `ПОДТВЕРЖДАЮ ПАКЕТ <full 64-character digest>`. Execute that digest only.
 - Never infer trade approval from phrases such as “давай”, “ок”, “согласен” or
   approval of an analysis plan.
+- Before submission, recheck the current portfolio, BCS catalogue, quote,
+  session and displayed order-book quantity. Any mismatch blocks the whole
+  package and requires a fresh proposal and confirmation.
+- Report an order as submitted, filled or cancelled only from the BCS response
+  and local execution journal. A multi-order broker basket is not atomic; report
+  partial fills honestly even after emergency cancellation.
 - Never handle withdrawals, asset transfers, margin, futures or options.
 - Treat blocked foreign securities as hold-only.
 

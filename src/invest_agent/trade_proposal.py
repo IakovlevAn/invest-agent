@@ -318,7 +318,7 @@ class ExactTradeProposalBuilder:
 
         estimated_cash = dirty_lot_value * lots
         return OrderIntent(
-            instrument_uid=f"BCS:{instrument.primary_board}:{instrument.ticker}",
+            instrument_uid=f"BCS:{instrument.primary_board}:{instrument.isin}",
             ticker=instrument.ticker,
             class_code=instrument.primary_board,
             instrument_type=InstrumentType.BOND,
@@ -374,6 +374,41 @@ class LocalTradeGateStore:
         path = self.approved / f"{receipt.approval.proposal_digest}.json"
         self._atomic_json(path, receipt.as_dict(), exclusive=True)
         return path
+
+    def load_approval(self, digest: str) -> ConfirmationReceipt:
+        validated_digest = _validated_digest(digest)
+        path = self.approved / f"{validated_digest}.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise TradeProposalError(
+                "explicit approval receipt was not found or is invalid"
+            ) from error
+        if not isinstance(payload, dict):
+            raise TradeProposalError("stored approval receipt is invalid")
+        try:
+            approval = Approval(
+                approval_id=str(payload["approval_id"]),
+                proposal_digest=str(payload["proposal_digest"]),
+                approved_by=str(payload["approved_by"]),
+                approved_at=_datetime(payload["approved_at"]),
+                expires_at=_datetime(payload["approval_expires_at"]),
+            )
+            receipt = ConfirmationReceipt(
+                approval=approval,
+                proposal_id=str(payload["proposal_id"]),
+                state=str(payload["state"]),
+                orders_created=bool(payload["orders_created"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise TradeProposalError("stored approval receipt is invalid") from error
+        if approval.proposal_digest != validated_digest:
+            raise TradeProposalError("stored approval digest does not match")
+        if receipt.state != "APPROVED_AWAITING_ISOLATED_EXECUTOR":
+            raise TradeProposalError("stored approval is not executable")
+        if receipt.orders_created:
+            raise TradeProposalError("stored approval unexpectedly claims created orders")
+        return receipt
 
     def approval_exists(self, digest: str) -> bool:
         return (self.approved / f"{_validated_digest(digest)}.json").is_file()
@@ -481,7 +516,7 @@ def proposal_as_dict(proposal: ProposalBundle) -> dict[str, Any]:
     )
     payload["state"] = "PENDING_EXPLICIT_CONFIRMATION"
     payload["orders_created"] = False
-    payload["broker_executor_available"] = False
+    payload["broker_executor_available"] = True
     return payload
 
 

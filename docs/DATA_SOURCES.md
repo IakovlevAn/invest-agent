@@ -13,6 +13,9 @@ trade-and-read. Access-токен выпускается из refresh-токен
 - Портфель и лимиты: https://trade-api.bcs.ru/http/limits/
 - Рыночные данные: https://trade-api.bcs.ru/http/market-data/
 - Заявки: https://trade-api.bcs.ru/http/operations/
+- Создание заявки: https://trade-api.bcs.ru/http/operations/create/
+- Статус заявки: https://trade-api.bcs.ru/http/operations/get-order-by-id/
+- Отмена заявки: https://trade-api.bcs.ru/http/operations/cancel-order/
 - Ограничения API: https://trade-api.bcs.ru/restrictions/
 
 Текущий read-only клиент использует следующие официальные адреса:
@@ -24,9 +27,11 @@ trade-and-read. Access-токен выпускается из refresh-токен
 - `POST https://be.broker.ru/trade-api-market-data-connector/api/v1/quotes`;
 - `GET https://be.broker.ru/trade-api-market-data-connector/api/v1/order-book`.
 
-Клиент не содержит URL создания заявок и не умеет использовать
-`client_id=trade-api-write`. Контрактные ответы справочника, котировки и стакана
-проверяются тестами на обезличенных данных. Перед точным пакетом код сверяет ISIN,
+Отдельный торговый клиент использует `client_id=trade-api-write` и только три
+операции: `POST /api/v1/orders`, `GET /api/v1/orders` по клиентскому UUID и
+`POST /api/v1/orders/cancel`. Read-only клиент URL заявок не содержит.
+Контрактные ответы справочника, котировки, стакана и заявок проверяются тестами
+на обезличенных данных. Перед точным пакетом код сверяет ISIN,
 тикер, основной режим торгов, валюту, признак блокировки, доступность неквалу,
 размер лота, шаг цены, номинал, НКД, статус сессии и верхний уровень стакана.
 Поле `quantity` стакана БКС документировано в штуках; перед созданием пакета оно
@@ -34,9 +39,8 @@ trade-and-read. Access-токен выпускается из refresh-токен
 
 Документированная HTTP-схема создания заявки БКС содержит сторону, тип, число,
 тикер, режим торгов и цену, но не отдельный time-in-force. Поэтому указанный в
-пакете `order_valid_until` является клиентским сроком: будущий исполнитель должен
-контролировать и отменять неисполненный остаток самостоятельно. Сейчас такого
-исполнителя и торгового токена в процессе нет.
+пакете `order_valid_until` является клиентским сроком: исполнитель контролирует
+статус и отменяет неисполненный остаток самостоятельно.
 
 Нормализатор реализован по официальной HTTP-схеме `positions`: `agreementId`,
 `ticker`, `instrumentType`, `quantity`, `locked`, `currentPrice`,

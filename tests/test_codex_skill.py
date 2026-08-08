@@ -25,8 +25,10 @@ class CodexSkillContractTests(unittest.TestCase):
         self.assertIn("Never request the token value", self.skill)
         self.assertIn("Never ask the user to paste BCS tokens", self.project_rules)
 
-    def test_skill_cannot_execute_orders_in_current_mvp(self) -> None:
-        self.assertIn("The current MVP cannot send broker orders", self.skill)
+    def test_only_exact_approved_package_can_be_executed(self) -> None:
+        self.assertIn("exactly confirmed BCS limit", self.skill)
+        self.assertIn("Never claim submission or execution without a BCS status", self.skill)
+        self.assertIn("reconcile", self.skill)
         self.assertIn("Never infer trade approval", self.project_rules)
 
     def test_skill_requires_exact_one_time_codex_confirmation(self) -> None:
