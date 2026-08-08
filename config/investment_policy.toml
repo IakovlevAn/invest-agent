@@ -1,0 +1,44 @@
+schema_version = 1
+
+[objective]
+base_currency = "RUB"
+horizon_min_years = 5
+horizon_max_years = 10
+current_target_annual_return = 0.20
+target_is_guarantee = false
+primary_benchmark = "Russian bank deposit rate indicator; exact series to be fixed in data phase"
+secondary_benchmark = "Relevant Russian bond total-return index; exact index to be fixed in data phase"
+
+[portfolio]
+primary_asset_class = "BOND"
+target_bond_share = 0.90
+target_bond_share_is_hard_limit = false
+allow_ofz = true
+cash_reserve_min_share = 0.00
+cash_reserve_is_dynamic = true
+regular_contribution_rub = 50000
+regular_contribution_is_guaranteed = false
+blocked_foreign_positions_are_hold_only = true
+
+[risk]
+warning_drawdown = 0.10
+maximum_drawdown = 0.15
+avoid_default_intent = true
+dynamic_credit_risk_budget = true
+fundamental_review_required = true
+macro_scenarios_required = true
+
+[trading]
+mode = "RECOMMEND_AND_CONFIRM"
+allowed_instrument_types = ["BOND", "STOCK", "FUND"]
+allowed_currency = "RUB"
+limit_orders_only = true
+explicit_external_approval_required = true
+approval_ttl_seconds = 600
+max_price_drift_bps = 25
+allow_margin = false
+allow_derivatives = false
+allow_foreign_purchases = false
+allow_withdrawals = false
+allow_asset_transfers = false
+
