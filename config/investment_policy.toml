@@ -1,5 +1,10 @@
 schema_version = 1
 
+[account]
+broker = "BCS"
+account_type = "IIS"
+interface = "CODEX"
+
 [objective]
 base_currency = "RUB"
 horizon_min_years = 5
@@ -41,4 +46,3 @@ allow_derivatives = false
 allow_foreign_purchases = false
 allow_withdrawals = false
 allow_asset_transfers = false
-

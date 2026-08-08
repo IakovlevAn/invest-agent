@@ -12,4 +12,3 @@ class BrokerReadPort(Protocol):
 
     def fetch_portfolio(self) -> PortfolioSnapshot:
         """Return a normalized point-in-time portfolio snapshot."""
-

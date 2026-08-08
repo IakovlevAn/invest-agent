@@ -59,9 +59,7 @@ class InvestmentPolicy:
                 InstrumentType(value) for value in trading["allowed_instrument_types"]
             ),
             limit_orders_only=trading["limit_orders_only"],
-            explicit_external_approval_required=trading[
-                "explicit_external_approval_required"
-            ],
+            explicit_external_approval_required=trading["explicit_external_approval_required"],
             approval_ttl_seconds=trading["approval_ttl_seconds"],
             max_price_drift_bps=trading["max_price_drift_bps"],
             allow_margin=trading["allow_margin"],
@@ -96,4 +94,3 @@ class InvestmentPolicy:
             raise PolicyViolation("proposal lifetime exceeds the approval time-to-live")
         for order in proposal.orders:
             self.validate_order(order)
-

@@ -6,8 +6,14 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from invest_agent.approval import ApprovalViolation, validate_approval
-from invest_agent.domain import Approval, InstrumentType, OrderIntent, OrderType, ProposalBundle, Side
-
+from invest_agent.domain import (
+    Approval,
+    InstrumentType,
+    OrderIntent,
+    OrderType,
+    ProposalBundle,
+    Side,
+)
 
 NOW = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
 
@@ -76,4 +82,3 @@ class ApprovalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

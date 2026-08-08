@@ -15,7 +15,6 @@ from invest_agent.brokers.bcs import (
     HttpResponse,
 )
 
-
 NOW = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
 
 
@@ -52,11 +51,21 @@ def json_response(status: int, payload: object) -> HttpResponse:
 class BcsReadClientTests(unittest.TestCase):
     def test_exchanges_only_read_token_and_redacts_it(self) -> None:
         transport = FakeTransport(
-            [json_response(200, {"access_token": "access-secret", "expires_in": 86400})]
+            [
+                json_response(
+                    200,
+                    {
+                        "access_token": "access-secret",
+                        "expires_in": "86400",
+                        "refresh_token": "rotated-refresh-secret",
+                        "refresh_expires_in": "7776000",
+                    },
+                )
+            ]
         )
         client = BcsReadClient(transport=transport, now=lambda: NOW)
 
-        token = client.exchange_read_only_refresh_token("refresh-secret")
+        pair = client.exchange_read_only_refresh_token("refresh-secret")
 
         call = transport.calls[0]
         self.assertEqual(call["method"], "POST")
@@ -65,8 +74,30 @@ class BcsReadClientTests(unittest.TestCase):
         self.assertEqual(form["client_id"], ["trade-api-read"])
         self.assertEqual(form["grant_type"], ["refresh_token"])
         self.assertEqual(form["refresh_token"], ["refresh-secret"])
-        self.assertEqual(token.expires_at, NOW + timedelta(days=1))
-        self.assertNotIn("access-secret", repr(token))
+        self.assertEqual(pair.access_token.expires_at, NOW + timedelta(days=1))
+        self.assertEqual(pair.refresh_token, "rotated-refresh-secret")
+        self.assertEqual(pair.refresh_expires_at, NOW + timedelta(days=90))
+        self.assertNotIn("access-secret", repr(pair))
+        self.assertNotIn("rotated-refresh-secret", repr(pair))
+
+    def test_rejects_non_finite_token_lifetime(self) -> None:
+        transport = FakeTransport(
+            [
+                json_response(
+                    200,
+                    {
+                        "access_token": "access-secret",
+                        "expires_in": "NaN",
+                        "refresh_token": "rotated-refresh-secret",
+                        "refresh_expires_in": "7776000",
+                    },
+                )
+            ]
+        )
+        client = BcsReadClient(transport=transport, now=lambda: NOW)
+
+        with self.assertRaisesRegex(BcsApiError, "authorization-contract"):
+            client.exchange_read_only_refresh_token("refresh-secret")
 
     def test_fetches_portfolio_with_bearer_token(self) -> None:
         payload = {"agreementData": {"isIia": True}, "positions": []}
@@ -130,4 +161,3 @@ class BcsReadClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

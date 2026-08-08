@@ -27,6 +27,15 @@ trade-and-read. Access-токен выпускается из refresh-токен
 Клиент не содержит URL создания заявок и не умеет использовать
 `client_id=trade-api-write`.
 
+Нормализатор реализован по официальной HTTP-схеме `positions`: `agreementId`,
+`ticker`, `instrumentType`, `quantity`, `locked`, `currentPrice`,
+`currentValueRub`, `board`, `isBlockedTradeAccount` и `isBlocked`. Номер
+брокерского соглашения не попадает в отчёт: используется короткий SHA-256 ref.
+
+Ответ авторизации содержит новую пару access/refresh. Новый refresh-токен
+записывается в macOS Keychain до запроса портфеля, чтобы сбой после ротации не
+оставил приложение со старым секретом.
+
 ## Следующая карта источников
 
 Для фундаментальной модели будут отдельно проверены первичные источники:
