@@ -55,9 +55,11 @@ near_term_event_days = 365
 # Fast recommendation hot path. These are allocation guards, not trade orders.
 max_bond_issuer_share_after_add = 0.15
 speculative_reduce_fraction = 1.00
+concentration_trim_fraction = 0.50
 minimum_allocation_rub = 5000
 allocation_rounding_rub = 100
-maximum_single_purchase_share_of_cash = 0.25
+maximum_single_purchase_share_of_cash = 0.30
+maximum_purchase_count = 3
 minimum_cash_reserve_rub = 2000
 
 [rate_model]

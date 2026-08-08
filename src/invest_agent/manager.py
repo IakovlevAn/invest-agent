@@ -45,6 +45,8 @@ class ManagerPolicy:
     allocation_rounding_rub: Decimal
     maximum_single_purchase_share_of_cash: Decimal
     minimum_cash_reserve_rub: Decimal = Decimal("0")
+    concentration_trim_fraction: Decimal = Decimal("1")
+    maximum_purchase_count: int = 8
     maximum_list_level_for_add: int = 2
     minimum_add_yield_percent: Decimal = Decimal("20")
     maximum_add_yield_percent: Decimal = Decimal("30")
@@ -81,6 +83,14 @@ class ManagerPolicy:
             minimum_cash_reserve_rub=_positive_decimal(
                 raw["minimum_cash_reserve_rub"],
                 "manager.minimum_cash_reserve_rub",
+            ),
+            concentration_trim_fraction=_fraction(
+                raw["concentration_trim_fraction"],
+                "manager.concentration_trim_fraction",
+            ),
+            maximum_purchase_count=_positive_int(
+                raw["maximum_purchase_count"],
+                "manager.maximum_purchase_count",
             ),
             maximum_list_level_for_add=_positive_int(
                 document["universe"]["maximum_list_level"],
@@ -572,6 +582,7 @@ class PortfolioManager:
         decisions: list[BondManagerDecision],
         bonds: BondMarketReport,
     ) -> list[BondManagerDecision]:
+        original = list(decisions)
         updated = list(decisions)
         target_share = self._manager_policy.max_bond_issuer_share_after_add
         for _ in range(20):
@@ -630,7 +641,42 @@ class PortfolioManager:
                     changed = True
             if not changed:
                 break
-        return updated
+        gradual: list[BondManagerDecision] = []
+        for initial, fully_trimmed in zip(original, updated, strict=True):
+            concentration_extra = (
+                fully_trimmed.recommended_reduce_rub
+                - initial.recommended_reduce_rub
+            )
+            if concentration_extra <= 0:
+                gradual.append(initial)
+                continue
+            scaled_extra = _round_up(
+                concentration_extra
+                * self._manager_policy.concentration_trim_fraction,
+                self._manager_policy.allocation_rounding_rub,
+            )
+            if scaled_extra < self._manager_policy.minimum_allocation_rub:
+                gradual.append(initial)
+                continue
+            gradual.append(
+                replace(
+                    initial,
+                    action=ManagerAction.REDUCE_RISK,
+                    recommended_reduce_rub=min(
+                        initial.market_value_rub,
+                        initial.recommended_reduce_rub + scaled_extra,
+                    ),
+                    reasons=tuple(
+                        dict.fromkeys(
+                            (
+                                *initial.reasons,
+                                "пошагово снижать концентрацию эмитента к лимиту 15%",
+                            )
+                        )
+                    ),
+                )
+            )
+        return gradual
 
     def _allocate_cash(
         self,
@@ -674,6 +720,7 @@ class PortfolioManager:
             remaining * self._manager_policy.maximum_single_purchase_share_of_cash,
             self._manager_policy.allocation_rounding_rub,
         )
+        allocated_count = 0
         for _, candidate_type, candidate in candidates:
             current_issuer_value = issuer_values.get(candidate.emitter_id, Decimal("0"))
             capacity = _issuer_add_capacity(
@@ -699,7 +746,11 @@ class PortfolioManager:
                 updated_new[index] = replace(new, recommended_add_rub=amount)
             issuer_values[candidate.emitter_id] = current_issuer_value + amount
             remaining -= amount
-            if remaining < self._manager_policy.minimum_allocation_rub:
+            allocated_count += 1
+            if (
+                remaining < self._manager_policy.minimum_allocation_rub
+                or allocated_count >= self._manager_policy.maximum_purchase_count
+            ):
                 break
         return updated_existing, updated_new
 

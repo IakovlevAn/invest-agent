@@ -348,12 +348,7 @@ class PortfolioManagerTests(unittest.TestCase):
         self.assertEqual(decisions["RU000A000002"].action, ManagerAction.URGENT_REVIEW)
         self.assertEqual(decisions["RU000A000003"].action, ManagerAction.REDUCE_RISK)
         speculative_reduction = decisions["RU000A000003"].recommended_reduce_rub
-        self.assertGreaterEqual(speculative_reduction, Decimal("10000"))
-        post_sale_sleeve = bonds.bond_value_rub - speculative_reduction
-        self.assertLessEqual(
-            Decimal("20000") - speculative_reduction,
-            post_sale_sleeve * Decimal("0.15"),
-        )
+        self.assertEqual(speculative_reduction, Decimal("10000"))
         scenario = next(item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH")
         self.assertFalse(scenario.recommended)
         self.assertEqual(report.primary_action, "VERIFY_CRITICAL_FLAG_BEFORE_NEW_RISK")
@@ -478,6 +473,17 @@ class PortfolioManagerTests(unittest.TestCase):
         self.assertTrue(payload["trade_gate"]["explicit_confirmation_required"])
         self.assertEqual(len(payload["scenarios"]), 3)
 
+        gradual_manager = PortfolioManager(
+            InvestmentPolicy.from_toml(POLICY_PATH),
+            replace(manager_policy(), concentration_trim_fraction=Decimal("0.50")),
+            now=lambda: NOW,
+        )
+        gradual = gradual_manager.recommend(audit, bonds, credit)
+        self.assertEqual(
+            gradual.decisions[0].recommended_reduce_rub,
+            Decimal("5000"),
+        )
+
     def test_allocates_cash_to_ranked_new_issuers_without_creating_orders(self) -> None:
         current = bond("RU000A000001", emitter_id=1, value="100000", yield_percent="18")
         audit, bonds, credit = inputs(
@@ -557,6 +563,20 @@ class PortfolioManagerTests(unittest.TestCase):
         )
         self.assertEqual(guarded_scenario.invested_cash_rub, Decimal("24000"))
         self.assertEqual(guarded_scenario.remaining_cash_rub, Decimal("26000"))
+
+        limited_manager = PortfolioManager(
+            InvestmentPolicy.from_toml(POLICY_PATH),
+            replace(manager_policy(), maximum_purchase_count=1),
+            now=lambda: NOW,
+        )
+        limited = limited_manager.recommend(audit, bonds, credit, universe)
+        self.assertEqual(
+            sum(
+                candidate.recommended_add_rub > 0
+                for candidate in limited.new_bond_candidates
+            ),
+            1,
+        )
 
     def test_rejects_cross_account_inputs(self) -> None:
         record = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")

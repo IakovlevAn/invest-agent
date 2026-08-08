@@ -315,6 +315,7 @@ class BondCandidateScreener:
                 market.duration_days,
                 band,
                 current_share,
+                list_level=record.moex.facts.list_level,
                 has_stable_downgrade=bool(downgrade_signals),
             )
             reasons = [
@@ -499,6 +500,7 @@ def _ranking_score(
     band: RatingBand,
     existing_share: Decimal,
     *,
+    list_level: int = 2,
     has_stable_downgrade: bool = False,
 ) -> Decimal:
     rating_penalty = {
@@ -509,12 +511,18 @@ def _ranking_score(
     }[band]
     duration_penalty = duration_days / Decimal("365") * Decimal("0.25")
     concentration_penalty = existing_share * Decimal("10")
+    listing_penalty = {
+        1: Decimal("0"),
+        2: Decimal("0.30"),
+        3: Decimal("1.20"),
+    }.get(list_level, Decimal("2"))
     downgrade_penalty = Decimal("1.50") if has_stable_downgrade else Decimal("0")
     return (
         yield_percent
         - rating_penalty
         - duration_penalty
         - concentration_penalty
+        - listing_penalty
         - downgrade_penalty
     )
 
