@@ -546,6 +546,18 @@ class PortfolioManagerTests(unittest.TestCase):
         )
         self.assertTrue(filtered.new_bond_candidates[0].bcs_availability_verified)
 
+        guarded_manager = PortfolioManager(
+            InvestmentPolicy.from_toml(POLICY_PATH),
+            replace(manager_policy(), minimum_cash_reserve_rub=Decimal("20000")),
+            now=lambda: NOW,
+        )
+        guarded = guarded_manager.recommend(audit, bonds, credit, universe)
+        guarded_scenario = next(
+            item for item in guarded.scenarios if item.code == "INVEST_CURRENT_CASH"
+        )
+        self.assertEqual(guarded_scenario.invested_cash_rub, Decimal("24000"))
+        self.assertEqual(guarded_scenario.remaining_cash_rub, Decimal("26000"))
+
     def test_rejects_cross_account_inputs(self) -> None:
         record = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")
         audit, bonds, credit = inputs(

@@ -317,7 +317,14 @@ def main(argv: list[str] | None = None) -> int:
             print(renderer(report))
             return 0
         if args.command in {"recommend", "proposal"}:
-            investment_policy, audit, bonds, manager, report = _build_manager_report(snapshot)
+            investment_policy, audit, bonds, manager, report = _build_manager_report(
+                snapshot,
+                buy_availability=lambda isins: _bcs_buy_available_isins(
+                    bcs,
+                    session.access_token,
+                    isins,
+                ),
+            )
             if args.command == "proposal":
                 actions = _parse_exact_actions(args)
                 proposal = ExactTradeProposalBuilder(
@@ -515,7 +522,7 @@ def _parse_exact_actions(args) -> tuple[tuple[str, Side], ...]:
     return ((args.isin.strip().upper(), Side(args.side)),)
 
 
-def _build_manager_report(snapshot):
+def _build_manager_report(snapshot, *, buy_availability=None):
     investment_policy = InvestmentPolicy.from_toml(POLICY_FILE)
     audit = PortfolioAuditor(investment_policy).audit(snapshot)
     moex = MoexIssClient()
@@ -528,6 +535,7 @@ def _build_manager_report(snapshot):
         ratings,
         credit_policy,
         BondUniversePolicy.from_toml(POLICY_FILE),
+        buy_availability=buy_availability,
     ).screen(snapshot, bonds)
     manager = PortfolioManager(
         investment_policy,
@@ -535,6 +543,27 @@ def _build_manager_report(snapshot):
     )
     report = manager.recommend(audit, bonds, credit, universe)
     return investment_policy, audit, bonds, manager, report
+
+
+def _bcs_buy_available_isins(bcs, access_token, isins) -> set[str]:
+    available: set[str] = set()
+    batch_size = 50
+    for start in range(0, len(isins), batch_size):
+        instruments = bcs.fetch_instruments_by_isins(
+            access_token,
+            tuple(isins[start : start + batch_size]),
+        )
+        available.update(
+            instrument.isin
+            for instrument in instruments
+            if instrument.is_ruble_bond
+            and not instrument.is_blocked
+            and not instrument.is_qualified_only
+            and instrument.available_for_unqualified
+            and instrument.lot_size > 0
+            and instrument.minimum_step > 0
+        )
+    return available
 
 
 def _render_recommendation_additions(

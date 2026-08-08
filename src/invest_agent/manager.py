@@ -44,6 +44,7 @@ class ManagerPolicy:
     minimum_allocation_rub: Decimal
     allocation_rounding_rub: Decimal
     maximum_single_purchase_share_of_cash: Decimal
+    minimum_cash_reserve_rub: Decimal = Decimal("0")
     maximum_list_level_for_add: int = 2
     minimum_add_yield_percent: Decimal = Decimal("20")
     maximum_add_yield_percent: Decimal = Decimal("30")
@@ -76,6 +77,10 @@ class ManagerPolicy:
             maximum_single_purchase_share_of_cash=_fraction(
                 raw["maximum_single_purchase_share_of_cash"],
                 "manager.maximum_single_purchase_share_of_cash",
+            ),
+            minimum_cash_reserve_rub=_positive_decimal(
+                raw["minimum_cash_reserve_rub"],
+                "manager.minimum_cash_reserve_rub",
             ),
             maximum_list_level_for_add=_positive_int(
                 document["universe"]["maximum_list_level"],
@@ -634,7 +639,10 @@ class PortfolioManager:
         bonds: BondMarketReport,
         cash_rub: Decimal,
     ) -> tuple[list[BondManagerDecision], list[NewBondManagerDecision]]:
-        remaining = cash_rub
+        remaining = max(
+            Decimal("0"),
+            cash_rub - self._manager_policy.minimum_cash_reserve_rub,
+        )
         updated_existing = list(decisions)
         updated_new = list(new_candidates)
         candidates: list[
@@ -663,7 +671,7 @@ class PortfolioManager:
             for exposure in bonds.issuer_exposures
         }
         maximum_purchase = _round_down(
-            cash_rub * self._manager_policy.maximum_single_purchase_share_of_cash,
+            remaining * self._manager_policy.maximum_single_purchase_share_of_cash,
             self._manager_policy.allocation_rounding_rub,
         )
         for _, candidate_type, candidate in candidates:

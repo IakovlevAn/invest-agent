@@ -154,12 +154,14 @@ class BondCandidateScreener:
         credit_policy: CreditAnalysisPolicy,
         universe_policy: BondUniversePolicy,
         *,
+        buy_availability: Callable[[tuple[str, ...]], set[str]] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._moex = moex
         self._ratings = ratings
         self._credit_policy = credit_policy
         self._policy = universe_policy
+        self._buy_availability = buy_availability
         self._now = now or (lambda: datetime.now(tz=UTC))
 
     def screen(
@@ -182,10 +184,21 @@ class BondCandidateScreener:
                 as_of=fetched_at,
             )
         ]
+        coarse_eligible_count = len(coarse)
+        rejection_counts: defaultdict[str, int] = defaultdict(int)
+        if self._buy_availability is not None and coarse:
+            available_isins = self._buy_availability(
+                tuple(dict.fromkeys(quote.isin for quote in coarse))
+            )
+            unavailable_count = sum(
+                quote.isin not in available_isins for quote in coarse
+            )
+            if unavailable_count:
+                rejection_counts["bcs_buy_unavailable"] += unavailable_count
+            coarse = [quote for quote in coarse if quote.isin in available_isins]
         shortlist = _diversified_shortlist(coarse, self._policy.pre_credit_limit)
         records: list[EnrichedBondPosition] = []
         failures: list[str] = []
-        rejection_counts: defaultdict[str, int] = defaultdict(int)
         emitter_cache: dict[int, Any] = {}
         quote_by_ticker = {quote.secid: quote for quote in shortlist}
         for quote in shortlist:
@@ -351,7 +364,7 @@ class BondCandidateScreener:
             fetched_at=fetched_at,
             board_id=self._policy.board_id,
             scanned_count=len(quotes),
-            coarse_eligible_count=len(coarse),
+            coarse_eligible_count=coarse_eligible_count,
             detailed_count=len(records),
             candidates=tuple(unique_candidates[: self._policy.result_limit]),
             rejection_counts=tuple(sorted(rejection_counts.items())),
