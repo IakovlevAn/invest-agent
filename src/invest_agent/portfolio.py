@@ -23,6 +23,9 @@ _INSTRUMENT_TYPES = {
     "STOCK": InstrumentType.STOCK,
     "SHARE": InstrumentType.STOCK,
     "FOREIGN_STOCK": InstrumentType.FOREIGN_STOCK,
+    "BLOCKED": InstrumentType.FOREIGN_STOCK,
+    "OTC": InstrumentType.FOREIGN_STOCK,
+    "OTC_EQUITIES": InstrumentType.FOREIGN_STOCK,
     "MUTUAL_FUNDS": InstrumentType.FUND,
     "ETF": InstrumentType.FUND,
     "FUND": InstrumentType.FUND,
@@ -55,11 +58,12 @@ class BcsPortfolioNormalizer:
             raise PortfolioContractError(
                 "BCS portfolio contains no positions, including no cash position"
             )
+        selected_positions = self._select_current_term(raw_positions)
 
         agreement_ids: set[str] = set()
         positions: list[Position] = []
         cash_rub = Decimal("0")
-        for index, raw in enumerate(raw_positions):
+        for index, raw in enumerate(selected_positions):
             if not isinstance(raw, dict):
                 raise PortfolioContractError(f"positions[{index}] must be an object")
             ticker = self._required_text(raw, "ticker", index)
@@ -81,7 +85,12 @@ class BcsPortfolioNormalizer:
                 raise PortfolioContractError(
                     f"positions[{index}].locked must be between zero and quantity"
                 )
-            board = self._required_text(raw, "board", index)
+            board_value = raw.get("board")
+            if not isinstance(board_value, str):
+                raise PortfolioContractError(f"positions[{index}].board must be text")
+            board = board_value.strip()
+            exchange = self._required_text(raw, "exchange", index)
+            class_code = board or exchange
             blocked_reasons: list[str] = []
             if self._boolean(raw, "isBlockedTradeAccount", index):
                 blocked_reasons.append("BCS trade account is blocked")
@@ -91,12 +100,16 @@ class BcsPortfolioNormalizer:
                 blocked_reasons.append("all units are locked")
             if instrument_type is InstrumentType.UNKNOWN:
                 blocked_reasons.append("unknown BCS instrument type")
+            if instrument_type is InstrumentType.FOREIGN_STOCK:
+                blocked_reasons.append("foreign assets are hold-only by mandate")
+            if not board:
+                blocked_reasons.append("BCS board is empty")
 
             positions.append(
                 Position(
-                    instrument_uid=f"BCS:{board}:{ticker}",
+                    instrument_uid=f"BCS:{class_code}:{ticker}",
                     ticker=ticker,
-                    class_code=board,
+                    class_code=class_code,
                     instrument_type=instrument_type,
                     quantity=quantity,
                     market_price=current_price,
@@ -122,10 +135,28 @@ class BcsPortfolioNormalizer:
             positions=tuple(positions),
         )
 
+    def _select_current_term(self, raw_positions: list[Any]) -> list[dict[str, Any]]:
+        by_term: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        for index, raw in enumerate(raw_positions):
+            if not isinstance(raw, dict):
+                raise PortfolioContractError(f"positions[{index}] must be an object")
+            term = self._required_text(raw, "term", index).upper()
+            by_term[term].append(raw)
+        if "T0" in by_term:
+            return by_term["T0"]
+        if len(by_term) == 1:
+            return next(iter(by_term.values()))
+        available = ", ".join(sorted(by_term))
+        raise PortfolioContractError(f"BCS portfolio has no T0 term; available terms: {available}")
+
     @staticmethod
     def _instrument_type(raw: Mapping[str, Any]) -> InstrumentType:
-        value = str(raw.get("instrumentType") or raw.get("upperType") or "").upper()
-        return _INSTRUMENT_TYPES.get(value, InstrumentType.UNKNOWN)
+        instrument_type = str(raw.get("instrumentType") or "").upper()
+        upper_type = str(raw.get("upperType") or "").upper()
+        return _INSTRUMENT_TYPES.get(
+            instrument_type,
+            _INSTRUMENT_TYPES.get(upper_type, InstrumentType.UNKNOWN),
+        )
 
     @staticmethod
     def _is_ruble_cash(raw: Mapping[str, Any], instrument_type: InstrumentType) -> bool:

@@ -56,7 +56,7 @@
       "expireDate": "2029-01-01",
       "upperType": "BONDS",
       "instrumentType": "BONDS",
-      "term": "T1",
+      "term": "T0",
       "quantity": 100,
       "locked": 10,
       "balancePrice": 1000,
@@ -99,7 +99,7 @@
       "expireDate": "2099-01-01",
       "upperType": "STOCK",
       "instrumentType": "STOCK",
-      "term": "T1",
+      "term": "T0",
       "quantity": 100,
       "locked": 0,
       "balancePrice": 900,
@@ -142,7 +142,7 @@
       "expireDate": "2099-01-01",
       "upperType": "FOREIGN_STOCK",
       "instrumentType": "FOREIGN_STOCK",
-      "term": "T2",
+      "term": "T0",
       "quantity": 3,
       "locked": 3,
       "balancePrice": 100,
@@ -174,4 +174,3 @@
     }
   ]
 }
-

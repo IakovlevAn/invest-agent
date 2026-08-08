@@ -198,7 +198,12 @@ class BcsReadClient:
                 "Authorization": f"{access_token.token_type} {access_token.value}",
             },
         )
-        return self._json_object(response, operation="portfolio")
+        payload = self._json_value(response, operation="portfolio")
+        if isinstance(payload, list):
+            return {"positions": payload}
+        if isinstance(payload, dict):
+            return payload
+        raise BcsApiError("portfolio-invalid-contract", response.status)
 
     def _request_with_retry(
         self,
@@ -228,12 +233,17 @@ class BcsReadClient:
 
     @staticmethod
     def _json_object(response: HttpResponse, *, operation: str) -> Mapping[str, Any]:
+        payload = BcsReadClient._json_value(response, operation=operation)
+        if not isinstance(payload, dict):
+            raise BcsApiError(f"{operation}-invalid-contract", response.status)
+        return payload
+
+    @staticmethod
+    def _json_value(response: HttpResponse, *, operation: str) -> Any:
         try:
             payload = json.loads(response.body)
         except (json.JSONDecodeError, UnicodeDecodeError) as error:
             raise BcsApiError(f"{operation}-invalid-json", response.status) from error
-        if not isinstance(payload, dict):
-            raise BcsApiError(f"{operation}-invalid-contract", response.status)
         return payload
 
     @staticmethod

@@ -27,7 +27,7 @@ class FakeStore:
     def set(self, token: str) -> None:
         self.events.append("set")
         if self.fail_on_set:
-            raise SecretStoreError("synthetic keychain failure")
+            raise SecretStoreError("synthetic token-store failure")
         self.value = token
 
 
@@ -76,7 +76,7 @@ class PortfolioReaderTests(unittest.TestCase):
             normalizer=BcsPortfolioNormalizer(now=lambda: NOW),
         )
 
-        with self.assertRaisesRegex(SecretStoreError, "synthetic keychain failure"):
+        with self.assertRaisesRegex(SecretStoreError, "synthetic token-store failure"):
             reader.refresh()
         self.assertFalse(client.fetch_called)
 
