@@ -16,6 +16,7 @@ class CodexSkillContractTests(unittest.TestCase):
         self.assertIn("uv run invest-agent portfolio --format json", self.skill)
         self.assertIn("uv run invest-agent audit --format json", self.skill)
         self.assertIn("uv run invest-agent bonds --format json", self.skill)
+        self.assertIn("uv run invest-agent credit --format json", self.skill)
         self.assertIn("Do not reconstruct holdings from conversation memory", self.skill)
 
     def test_skill_keeps_token_out_of_chat(self) -> None:

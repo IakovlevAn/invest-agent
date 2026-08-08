@@ -1,0 +1,54 @@
+{
+  "status": "success",
+  "data": {
+    "pageCount": 1,
+    "pageNumber": 1,
+    "pageSize": 100,
+    "itemCount": 3,
+    "itemList": [
+      {
+        "ratingAction": "Рейтинг понижен, прогноз изменен, статус снят",
+        "releaseDate": "01.04.2026",
+        "inn": "9717068640",
+        "objectType": "BNFC – нефинансовая компания",
+        "ratingValue": "BBB+(RU)",
+        "prediction": "DEV – развивающийся",
+        "objectName": "ООО ВУШ",
+        "kraName": "АКРА (АО)",
+        "releaseUrl": "https://www.acra-ratings.ru/press-releases/6737/",
+        "objectId": "223183",
+        "isin": "",
+        "subjectName": ""
+      },
+      {
+        "ratingAction": "Рейтинг впервые присвоен",
+        "releaseDate": "01.04.2026",
+        "inn": "9717068640",
+        "objectType": "BNFC – нефинансовая компания",
+        "ratingValue": "BBB+|ru|",
+        "prediction": "Развивающийся",
+        "objectName": "ООО ВУШ",
+        "kraName": "ООО НРА",
+        "releaseUrl": "https://www.ra-national.ru/press_release/example/",
+        "objectId": "223183",
+        "isin": "",
+        "subjectName": ""
+      },
+      {
+        "ratingAction": "Кредитный рейтинг отозван",
+        "releaseDate": "27.06.2025",
+        "inn": "9717068640",
+        "objectType": "BND – облигационный займ",
+        "ratingValue": "BBB+(RU)",
+        "prediction": "",
+        "objectName": "ВУШ выпуск 2022",
+        "kraName": "АКРА (АО)",
+        "releaseUrl": "https://www.acra-ratings.ru/press-releases/example/",
+        "objectId": "old-issue",
+        "isin": "RU000A104WS2",
+        "subjectName": "ООО ВУШ"
+      }
+    ]
+  },
+  "errors": []
+}
