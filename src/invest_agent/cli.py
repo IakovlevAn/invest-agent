@@ -16,6 +16,7 @@ from invest_agent.bond_report import (
 )
 from invest_agent.broker_checks import BcsTradeVerifier
 from invest_agent.brokers.bcs import BcsApiError, BcsReadClient
+from invest_agent.brokers.bcs_trade import BcsTradeClient
 from invest_agent.credit import (
     CreditAnalysisPolicy,
     CreditPortfolioAnalyzer,
@@ -23,6 +24,11 @@ from invest_agent.credit import (
     render_credit_report_text,
 )
 from invest_agent.domain import Side
+from invest_agent.executor import (
+    ExactPackageExecutor,
+    ExecutionViolation,
+    LocalExecutionStore,
+)
 from invest_agent.financial.fns import GirboClient
 from invest_agent.fundamentals import (
     FundamentalPolicy,
@@ -68,8 +74,10 @@ from invest_agent.universe import BondCandidateScreener, BondUniversePolicy
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_ENV_FILE = PROJECT_ROOT / ".env"
 TOKEN_FILE_ENV_KEY = "INVEST_AGENT_TOKEN_FILE"
+TRADE_TOKEN_FILE_ENV_KEY = "INVEST_AGENT_TRADE_TOKEN_FILE"
 POLICY_FILE = PROJECT_ROOT / "config" / "investment_policy.toml"
 TRADE_GATE_ROOT = PROJECT_ROOT / ".local" / "state" / "trade-gate"
+TRADE_EXECUTION_ROOT = TRADE_GATE_ROOT / "executions"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -123,6 +131,34 @@ def build_parser() -> argparse.ArgumentParser:
     confirm.add_argument("--digest", required=True, help="Full SHA-256 proposal digest")
     confirm.add_argument("--confirmation-text", required=True)
     confirm.add_argument("--format", choices=("text", "json"), default="text")
+
+    token_check = commands.add_parser(
+        "trade-token-check",
+        help="Validate and rotate the isolated BCS trading token without an order request",
+    )
+    token_check.add_argument("--format", choices=("text", "json"), default="text")
+    token_check.add_argument("--token-file", type=Path)
+
+    execute = commands.add_parser(
+        "execute",
+        help="Execute only a persisted package with its exact Codex approval receipt",
+    )
+    execute.add_argument("--digest", required=True, help="Full SHA-256 proposal digest")
+    execute.add_argument("--format", choices=("text", "json"), default="text")
+
+    execution_status = commands.add_parser(
+        "execution-status",
+        help="Read the local safe execution journal without broker access",
+    )
+    execution_status.add_argument("--digest", required=True)
+    execution_status.add_argument("--format", choices=("text", "json"), default="text")
+
+    reconcile = commands.add_parser(
+        "reconcile",
+        help="Refresh or cancel already-submitted package orders without creating new ones",
+    )
+    reconcile.add_argument("--digest", required=True)
+    reconcile.add_argument("--format", choices=("text", "json"), default="text")
     return parser
 
 
@@ -138,6 +174,66 @@ def _add_read_options(command: argparse.ArgumentParser) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "trade-token-check":
+            token_file = args.token_file or _configured_path_from_local_env(
+                LOCAL_ENV_FILE,
+                TRADE_TOKEN_FILE_ENV_KEY,
+                "торговому токену",
+            )
+            store = PrivateFileRefreshTokenStore(token_file)
+            pair = BcsTradeClient().exchange_trade_refresh_token(store.get())
+            store.set(pair.refresh_token)
+            payload = {
+                "status": "VALID",
+                "authority": "BCS_TRADE",
+                "access_expires_at": pair.access_token.expires_at.isoformat(),
+                "refresh_expires_at": pair.refresh_expires_at.isoformat(),
+                "order_requests_sent": 0,
+            }
+            if args.format == "json":
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                print(
+                    "Торговый токен БКС действителен "
+                    "и безопасно ротирован.\n"
+                    f"Access действует до: {payload['access_expires_at']}\n"
+                    f"Refresh действует до: {payload['refresh_expires_at']}\n"
+                    "Заявки в БКС не отправлялись."
+                )
+            return 0
+        if args.command == "execution-status":
+            report = LocalExecutionStore(TRADE_EXECUTION_ROOT).report(args.digest)
+            if args.format == "json":
+                print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+            else:
+                print(
+                    f"Исполнение пакета {report.proposal_digest}: {report.state}\n"
+                    f"Последнее обновление: {report.updated_at.isoformat()}"
+                )
+            return 0
+        if args.command == "execute":
+            executor = _package_executor()
+            report = executor.execute(args.digest)
+            if args.format == "json":
+                print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+            else:
+                print(
+                    f"Исполнение точного пакета: {report.state}\n"
+                    f"Digest: {report.proposal_digest}\n"
+                    f"Последнее обновление: {report.updated_at.isoformat()}"
+                )
+            return 0
+        if args.command == "reconcile":
+            report = _package_executor().reconcile(args.digest)
+            if args.format == "json":
+                print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+            else:
+                print(
+                    f"Сверка точного пакета: {report.state}\n"
+                    f"Digest: {report.proposal_digest}\n"
+                    f"Последнее обновление: {report.updated_at.isoformat()}"
+                )
+            return 0
         if args.command == "confirm":
             proposal_policy = TradeProposalPolicy.from_toml(POLICY_FILE)
             receipt = CodexConfirmationGate(
@@ -156,7 +252,8 @@ def main(argv: list[str] | None = None) -> int:
                     "Подтверждение действует до: "
                     f"{receipt.approval.expires_at.isoformat()}\n"
                     "Заявки в БКС не отправлены: "
-                    "изолированный исполнитель ещё отсутствует."
+                    "исполнитель запускается Codex только "
+                    "для этого digest."
                 )
             return 0
         if args.command in {
@@ -244,7 +341,8 @@ def main(argv: list[str] | None = None) -> int:
                         for order in proposal.orders
                     )
                     print(
-                        "Точный пакет лимитных заявок сформирован.\n"
+                        "Точный пакет лимитных заявок "
+                        "сформирован.\n"
                         f"{order_lines}\n"
                         f"Digest: {proposal.digest}\n"
                         "Для подтверждения: "
@@ -281,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
                     "bcs_catalog_checks_complete": checks_complete,
                     "exact_package_command_available": True,
                     "codex_confirmation_available": True,
-                    "broker_executor_available": False,
+                    "broker_executor_available": True,
                 }
             )
             if args.format == "json":
@@ -294,6 +392,7 @@ def main(argv: list[str] | None = None) -> int:
         ApprovalViolation,
         BcsApiError,
         CbrKeyRateError,
+        ExecutionViolation,
         PortfolioContractError,
         PolicyViolation,
         SecretStoreError,
@@ -305,11 +404,49 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _token_file_from_local_env(env_file: Path) -> Path:
+    return _configured_path_from_local_env(
+        env_file,
+        TOKEN_FILE_ENV_KEY,
+        "read-only токену",
+    )
+
+
+def _package_executor() -> ExactPackageExecutor:
+    return ExactPackageExecutor(
+        gate_store=LocalTradeGateStore(TRADE_GATE_ROOT),
+        execution_store=LocalExecutionStore(TRADE_EXECUTION_ROOT),
+        read_client=BcsReadClient(),
+        trade_client=BcsTradeClient(),
+        read_token_store=PrivateFileRefreshTokenStore(
+            _configured_path_from_local_env(
+                LOCAL_ENV_FILE,
+                TOKEN_FILE_ENV_KEY,
+                "read-only токену",
+            )
+        ),
+        trade_token_store=PrivateFileRefreshTokenStore(
+            _configured_path_from_local_env(
+                LOCAL_ENV_FILE,
+                TRADE_TOKEN_FILE_ENV_KEY,
+                "торговому токену",
+            )
+        ),
+        normalizer=BcsPortfolioNormalizer(),
+        investment_policy=InvestmentPolicy.from_toml(POLICY_FILE),
+        proposal_policy=TradeProposalPolicy.from_toml(POLICY_FILE),
+    )
+
+
+def _configured_path_from_local_env(
+    env_file: Path,
+    key_name: str,
+    token_label: str,
+) -> Path:
     try:
         lines = env_file.read_text(encoding="utf-8").splitlines()
     except OSError as error:
         raise SecretStoreError(
-            "Локальный .env с путём к read-only токену не найден"
+            f"Локальный .env с путём к {token_label} не найден"
         ) from error
 
     configured: list[str] = []
@@ -318,11 +455,11 @@ def _token_file_from_local_env(env_file: Path) -> Path:
         if not stripped or stripped.startswith("#"):
             continue
         key, separator, value = stripped.partition("=")
-        if separator and key.strip() == TOKEN_FILE_ENV_KEY:
+        if separator and key.strip() == key_name:
             configured.append(value.strip().strip('"').strip("'"))
     if len(configured) != 1 or not configured[0]:
         raise SecretStoreError(
-            f"В .env должен быть ровно один {TOKEN_FILE_ENV_KEY}"
+            f"В .env должен быть ровно один {key_name}"
         )
 
     path = Path(configured[0]).expanduser()
@@ -374,9 +511,7 @@ def _build_manager_report(snapshot):
 def _render_recommendation_additions(checks, rate_report) -> str:
     lines = ["", "", "Проверка БКС:"]
     if not checks:
-        lines.append(
-            "- нет действий с положительной суммой для точной проверки"
-        )
+        lines.append("- нет действий с положительной суммой для точной проверки")
     for check in checks:
         status = (
             "доступен в справочнике"

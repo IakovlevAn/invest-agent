@@ -6,6 +6,7 @@ from pathlib import Path
 
 from invest_agent.cli import (
     PROJECT_ROOT,
+    _configured_path_from_local_env,
     _parse_exact_actions,
     _token_file_from_local_env,
     build_parser,
@@ -37,6 +38,15 @@ class LocalEnvTests(unittest.TestCase):
 
         self.assertEqual(proposal.side, "BUY")
         self.assertEqual(confirmation.digest, "a" * 64)
+
+        token_check = build_parser().parse_args(["trade-token-check"])
+        execution = build_parser().parse_args(["execute", "--digest", "a" * 64])
+        status = build_parser().parse_args(["execution-status", "--digest", "a" * 64])
+        reconcile = build_parser().parse_args(["reconcile", "--digest", "a" * 64])
+        self.assertEqual(token_check.command, "trade-token-check")
+        self.assertEqual(execution.command, "execute")
+        self.assertEqual(status.command, "execution-status")
+        self.assertEqual(reconcile.command, "reconcile")
 
         basket = build_parser().parse_args(
             [
@@ -77,3 +87,21 @@ class LocalEnvTests(unittest.TestCase):
 
             with self.assertRaisesRegex(SecretStoreError, "ровно один"):
                 _token_file_from_local_env(env_file)
+
+    def test_reads_separate_trade_token_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env"
+            env_file.write_text(
+                "INVEST_AGENT_TRADE_TOKEN_FILE=.local/secrets/bcs-trade-refresh-token\n"
+            )
+
+            path = _configured_path_from_local_env(
+                env_file,
+                "INVEST_AGENT_TRADE_TOKEN_FILE",
+                "торговому токену",
+            )
+
+        self.assertEqual(
+            path,
+            PROJECT_ROOT / ".local" / "secrets" / "bcs-trade-refresh-token",
+        )

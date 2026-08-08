@@ -1,4 +1,4 @@
-"""Immutable domain objects shared by analytics and the future executor."""
+"""Immutable domain objects shared by analytics and the isolated executor."""
 
 from __future__ import annotations
 

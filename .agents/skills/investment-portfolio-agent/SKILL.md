@@ -23,10 +23,9 @@ Russian portfolio report or recommendation in the conversation.
    MOEX bond facts, the tradable bond universe and Bank of Russia rating evidence,
    verifies actionable issues in the BCS catalogue and quotes, adds official
    key-rate scenarios for floaters and long bonds, then compares no action,
-   investing current cash and rebalancing. The local
-   `.env` contains only
-   `INVEST_AGENT_TOKEN_FILE`; the token
-   itself is in the ignored mode-600 `.local/secrets/` file.
+   investing current cash and rebalancing. The local `.env` contains only token
+   file paths; token values themselves are in separate ignored mode-600 files
+   under `.local/secrets/`.
    Do not reconstruct holdings from conversation memory.
    For allocation, concentration and mandate diagnostics, run
    `uv run invest-agent audit --format json` after or instead of the raw snapshot.
@@ -87,7 +86,9 @@ data quality and scenario sensitivity.
 
 ## Trade boundary
 
-The current MVP cannot send broker orders. Never pretend otherwise.
+The executor can send only an already persisted and exactly confirmed BCS limit
+order package. Recommendation, audit, proposal and confirmation commands cannot
+send broker orders. Never claim submission or execution without a BCS status.
 
 An analysis or recommendation does not authorize a trade. If the user asks to
 prepare a specific recommended action, Codex may run the internal `proposal`
@@ -100,16 +101,36 @@ and the full 64-character SHA-256 digest.
 Confirmation is a separate Codex turn and is valid only when the user's message
 equals `ПОДТВЕРЖДАЮ ПАКЕТ <full digest>` exactly. Never infer it from “давай”,
 “ок”, “согласен”, or approval of the analysis. Run the internal `confirm` command
-only after that exact message. The resulting receipt is one-time and has state
-`APPROVED_AWAITING_ISOLATED_EXECUTOR`; explicitly tell the user that no BCS order
-was sent because the executor is absent.
+only after that exact message. Then run the internal
+`execute --digest <same full digest>` command. Never pass arbitrary instrument,
+side, quantity or price arguments to the executor.
+The one-time confirmation receipt has state
+`APPROVED_AWAITING_ISOLATED_EXECUTOR` until execution begins.
+
+Before the first order, the executor refreshes the portfolio with the read-only
+token and rechecks cash or unlocked units, BCS catalogue eligibility, the open
+session, fresh quote and sufficient displayed order-book quantity at the exact
+approved limit. It then loads the separate trading token, persists BCS token
+rotation before the first order request, and uses deterministic client UUIDs so
+a retry checks broker status instead of duplicating an order.
+
+Monitor the executor to a broker-confirmed terminal state. If the client-side
+deadline is reached, it sends cancellation for the remainder. If the process was
+interrupted after submission, use `reconcile --digest <same digest>`; reconcile
+may read status and cancel an overdue submitted order, but can never create one.
+Report partial fills honestly: a BCS basket is not atomic and cancellation cannot
+undo an already executed quantity.
 
 Any change to instrument, board, side, lots, limit price, quote time or validity
 requires a new package, digest and confirmation. Build exact packages only while
 BCS reports trading open and the quote/order book are fresh. Use only limit
 orders; do not expose withdrawal, transfer, margin or derivative actions. The
-client-side validity is not a native BCS time-in-force field; a future executor
-must cancel the remaining order by that deadline.
+client-side validity is not a native BCS time-in-force field; the executor must
+remain running or be reconciled to cancel the remaining order by that deadline.
+
+The trade-token validation command is not a trade confirmation and must never
+trigger `confirm` or `execute`. “Готово”, “давай”, or successful token setup does
+not authorize an order.
 
 ## Read-only questions
 
