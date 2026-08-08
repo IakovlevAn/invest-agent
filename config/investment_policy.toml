@@ -38,6 +38,10 @@ macro_scenarios_required = true
 position_concentration_warning_share = 0.20
 material_blocked_share = 0.05
 
+[credit]
+# Freshness diagnostic only. A recent rating does not imply low default risk.
+rating_max_age_days = 400
+
 [trading]
 mode = "RECOMMEND_AND_CONFIRM"
 allowed_instrument_types = ["BOND", "STOCK", "FUND"]

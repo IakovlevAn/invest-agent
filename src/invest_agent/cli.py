@@ -13,6 +13,12 @@ from invest_agent.bond_report import (
     render_bond_report_text,
 )
 from invest_agent.brokers.bcs import BcsApiError, BcsReadClient
+from invest_agent.credit import (
+    CreditAnalysisPolicy,
+    CreditPortfolioAnalyzer,
+    render_credit_report_json,
+    render_credit_report_text,
+)
 from invest_agent.market.moex import MoexIssClient
 from invest_agent.policy import InvestmentPolicy
 from invest_agent.portfolio import (
@@ -21,6 +27,7 @@ from invest_agent.portfolio import (
     render_portfolio_json,
     render_portfolio_text,
 )
+from invest_agent.ratings.cbr import CbrRatingsClient
 from invest_agent.reader import PortfolioReader
 from invest_agent.secrets import (
     PrivateFileRefreshTokenStore,
@@ -45,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     bonds = commands.add_parser("bonds", help="Enrich portfolio bonds with MOEX ISS data")
     _add_read_options(bonds)
+
+    credit = commands.add_parser(
+        "credit",
+        help="Build credit passports from MOEX and the Bank of Russia ratings repository",
+    )
+    _add_read_options(credit)
     return parser
 
 
@@ -60,7 +73,7 @@ def _add_read_options(command: argparse.ArgumentParser) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command in {"portfolio", "audit", "bonds"}:
+        if args.command in {"portfolio", "audit", "bonds", "credit"}:
             token_file = args.token_file or _token_file_from_local_env(LOCAL_ENV_FILE)
             snapshot = PortfolioReader(
                 client=BcsReadClient(),
@@ -80,6 +93,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "bonds":
             report = BondPortfolioEnricher(MoexIssClient()).enrich(snapshot)
             renderer = render_bond_report_json if args.format == "json" else render_bond_report_text
+            print(renderer(report))
+            return 0
+        if args.command == "credit":
+            bonds = BondPortfolioEnricher(MoexIssClient()).enrich(snapshot)
+            report = CreditPortfolioAnalyzer(
+                CbrRatingsClient(),
+                CreditAnalysisPolicy.from_toml(POLICY_FILE),
+            ).analyze(bonds)
+            renderer = (
+                render_credit_report_json if args.format == "json" else render_credit_report_text
+            )
             print(renderer(report))
             return 0
     except (BcsApiError, PortfolioContractError, SecretStoreError) as error:

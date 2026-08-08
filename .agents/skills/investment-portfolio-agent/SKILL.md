@@ -22,7 +22,10 @@ calculations and policy checks.
    `uv run invest-agent audit --format json` after or instead of the raw snapshot.
    For bond decisions, also run `uv run invest-agent bonds --format json` to
    refresh official MOEX issue, issuer, yield, duration and same-day liquidity
-   facts. Treat public ISS data as possibly delayed and use its timestamps.
+   facts. Then run `uv run invest-agent credit --format json` to refresh issuer
+   and exact-issue rating actions from the official Bank of Russia repository.
+   Treat public data as possibly delayed and use its timestamps. A broad rating
+   band is a diagnostic mapping, not a PD estimate or a cross-agency score.
 4. If the read-only token file is not configured, create a mode-600 carrier
    file under `/private/tmp` and have the user paste the token into it using
    their own local editor. Never read or print that file. Move it without
@@ -57,7 +60,8 @@ For “what should I buy/sell?”, “where should I invest 50,000 ₽?” or si
    concentration, the managed sleeve and missing data. Do not call position HHI
    issuer concentration; issuer aggregation requires enrichment.
 3. Run the bond enrichment for MOEX market facts and issuer aggregation, then
-   refresh the remaining credit, disclosure and macro evidence from primary sources.
+   run the credit passports for CBR rating evidence, then refresh the remaining
+   disclosure and macro evidence from primary sources.
 4. Compare at least: no action, invest new cash, and rebalance when applicable.
 5. Apply deterministic policy checks before presenting a proposal.
 6. Give a concise Russian response with:
