@@ -24,6 +24,7 @@ from invest_agent.trade_proposal import (
     ExactTradeProposalBuilder,
     LocalTradeGateStore,
     TradeProposalPolicy,
+    proposal_as_dict,
 )
 from test_manager import bond, inputs, rating
 
@@ -264,7 +265,7 @@ class ExactTradeProposalTests(unittest.TestCase):
             receipt = gate.confirm_semantic(
                 proposal_digest=proposal.digest,
                 user_message=(
-                    "Подтверждаю выставление всего предложенного пакета заявок"
+                    "Подтверждаю выставление всех предложенных заявок"
                 ),
             )
 
@@ -274,7 +275,7 @@ class ExactTradeProposalTests(unittest.TestCase):
                 gate.confirm_semantic(
                     proposal_digest=proposal.digest,
                     user_message=(
-                        "Подтверждаю выставление всего предложенного пакета заявок"
+                        "Подтверждаю выставление всех предложенных заявок"
                     ),
                 )
 
@@ -303,12 +304,12 @@ class ExactTradeProposalTests(unittest.TestCase):
 
             receipt = gate.confirm_semantic(
                 proposal_digest=proposal.digest,
-                user_message="Да, продаем этот пакет",
+                user_message="Да, продаем предложенные позиции",
             )
 
         self.assertEqual(receipt.confirmation_mode, "CODEX_SEMANTIC")
         self.assertIsNotNone(receipt.confirmation_evidence_digest)
-        self.assertNotIn(proposal.digest, "Да, продаем этот пакет")
+        self.assertNotIn(proposal.digest, "Да, продаем предложенные позиции")
 
     def test_semantic_confirmation_rejects_acknowledgement_question_and_wrong_side(self) -> None:
         policy, report, snapshot = manager_report_and_snapshot()
@@ -375,8 +376,28 @@ class ExactTradeProposalTests(unittest.TestCase):
             with self.assertRaisesRegex(ApprovalViolation, "active proposal"):
                 gate.confirm_semantic(
                     proposal_digest=first.digest,
-                    user_message="Да, продаем этот пакет",
+                    user_message="Да, продаем предложенные позиции",
                 )
+
+    def test_confirmation_examples_avoid_package_wording(self) -> None:
+        policy, report, snapshot = manager_report_and_snapshot()
+        proposal = ExactTradeProposalBuilder(
+            client=FakeBcsClient(),
+            investment_policy=policy,
+            proposal_policy=TradeProposalPolicy.from_toml(POLICY_PATH),
+            now=lambda: NOW,
+        ).build_manager_action(
+            report=report,
+            snapshot=snapshot,
+            access_token=object(),
+            isin=ISIN,
+            side=Side.SELL,
+        )
+
+        examples = proposal_as_dict(proposal)["confirmation_examples"]
+
+        self.assertTrue(examples)
+        self.assertTrue(all("пакет" not in example.casefold() for example in examples))
 
     def test_caps_lots_to_displayed_units_at_limit_price(self) -> None:
         policy, report, snapshot = manager_report_and_snapshot()

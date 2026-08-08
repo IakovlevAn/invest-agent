@@ -17,15 +17,15 @@ security, market, recommendation, rebalance or trade-related request.
   bound to the full immutable proposal digest: instrument, board, side, lots,
   limit price, quote time and validity.
 - The user does not need to type the digest. Accept a separate semantic
-  confirmation only when it unambiguously authorizes the displayed trade package,
-  for example “подтверждаю выставление предложенных заявок” or “покупаем этот
-  пакет”. Codex must bind it internally to the single active digest, run `confirm`,
-  and then `execute` that same digest only.
+  confirmation only when it unambiguously authorizes the displayed trades,
+  for example “подтверждаю выставление предложенных заявок” or “покупаем
+  предложенные активы”. Codex must bind it internally to the single active digest,
+  run `confirm`, and then `execute` that same digest only.
 - Never infer trade approval from a bare “давай”, “ок”, “готово”, a question,
   conditional wording or approval of an analysis/recommendation.
 - Before submission, recheck the current portfolio, BCS catalogue, quote,
   session and displayed order-book quantity. Any mismatch blocks the whole
-  package and requires a fresh proposal and confirmation.
+  order list and requires a fresh proposal and confirmation.
 - Report an order as submitted, filled or cancelled only from the BCS response
   and local execution journal. A multi-order broker basket is not atomic; report
   partial fills honestly even after emergency cancellation.

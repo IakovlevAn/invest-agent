@@ -138,7 +138,7 @@ class ExactTradeProposalBuilder:
         if not normalized_actions or len(normalized_actions) != len(actions):
             raise TradeProposalError("at least one exact manager action is required")
         if len({isin for isin, _ in normalized_actions}) != len(normalized_actions):
-            raise TradeProposalError("an ISIN may occur only once in an exact package")
+            raise TradeProposalError("an ISIN may occur only once in an exact order list")
         targets = tuple(
             (isin, side, *_manager_target(report, isin, side))
             for isin, side in normalized_actions
@@ -188,7 +188,7 @@ class ExactTradeProposalBuilder:
             start=Decimal("0"),
         )
         if total_buy_cash > snapshot.cash_rub:
-            raise TradeProposalError("exact package purchases exceed current free cash")
+            raise TradeProposalError("exact proposed purchases exceed current free cash")
         projected_return = _projected_return(
             report,
             Side.BUY if any(order.side is Side.BUY for order in orders) else Side.SELL,
@@ -569,11 +569,11 @@ def proposal_as_dict(proposal: ProposalBundle) -> dict[str, Any]:
     payload["proposal_digest"] = proposal.digest
     payload["confirmation_mode"] = "CODEX_SEMANTIC"
     side_examples = {
-        frozenset({Side.BUY}): "Да, покупаем этот пакет",
-        frozenset({Side.SELL}): "Да, продаем этот пакет",
+        frozenset({Side.BUY}): "Да, покупаем предложенные активы",
+        frozenset({Side.SELL}): "Да, продаем предложенные позиции",
     }
     payload["confirmation_examples"] = [
-        "Подтверждаю выставление всего предложенного пакета заявок",
+        "Подтверждаю выставление всех предложенных заявок",
     ]
     side_example = side_examples.get(frozenset(order.side for order in proposal.orders))
     if side_example is not None:
@@ -595,7 +595,7 @@ def validate_semantic_confirmation(user_message: str) -> str:
         raise ApprovalViolation("a question cannot authorize a trade")
     if re.search(r"\d", normalized):
         raise ApprovalViolation(
-            "semantic confirmation cannot override numeric package parameters"
+            "semantic confirmation cannot override numeric trade parameters"
         )
     if re.search(
         r"\b(?:не|нет|без|но|кроме|часть\w*|половин\w*|друг\w*|услов\w*|"
@@ -613,12 +613,13 @@ def validate_semantic_confirmation(user_message: str) -> str:
         normalized,
     )
     trade_object = re.search(
-        r"\b(?:пакет\w*|заяв\w*|сделк\w*|покупк\w*|продаж\w*|ордер\w*)\b",
+        r"\b(?:пакет\w*|заяв\w*|сделк\w*|покупк\w*|продаж\w*|ордер\w*|"
+        r"актив\w*|позиц\w*|бумаг\w*)\b",
         normalized,
     )
     if trade_object is None or (confirmation is None and action is None):
         raise ApprovalViolation(
-            "semantic confirmation must explicitly authorize the proposed trade package"
+            "semantic confirmation must explicitly authorize the proposed trades"
         )
     return normalized
 
@@ -646,7 +647,7 @@ def _validate_semantic_sides(
         return
     if mentioned_sides != proposal_sides:
         raise ApprovalViolation(
-            "semantic confirmation side does not match the whole proposed package"
+            "semantic confirmation side does not match all proposed trades"
         )
 
 

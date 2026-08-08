@@ -113,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     proposal = commands.add_parser(
         "proposal",
-        help="Build and persist an exact BCS-verified limit-order package",
+        help="Build and persist an exact BCS-verified list of limit orders",
     )
     _add_read_options(proposal)
     proposal.add_argument("--isin", help="Exact ISIN from the manager report")
@@ -141,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     execute = commands.add_parser(
         "execute",
-        help="Execute only a persisted package with its exact Codex approval receipt",
+        help="Execute only a persisted exact order list with its Codex approval receipt",
     )
     execute.add_argument("--digest", required=True, help="Full SHA-256 proposal digest")
     execute.add_argument("--format", choices=("text", "json"), default="text")
@@ -155,7 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     reconcile = commands.add_parser(
         "reconcile",
-        help="Refresh or cancel already-submitted package orders without creating new ones",
+        help="Refresh or cancel already-submitted orders without creating new ones",
     )
     reconcile.add_argument("--digest", required=True)
     reconcile.add_argument("--format", choices=("text", "json"), default="text")
@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
             else:
                 print(
-                    f"Исполнение пакета {report.proposal_digest}: {report.state}\n"
+                    f"Исполнение списка заявок {report.proposal_digest}: {report.state}\n"
                     f"Последнее обновление: {report.updated_at.isoformat()}"
                 )
             return 0
@@ -218,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
             else:
                 print(
-                    f"Исполнение точного пакета: {report.state}\n"
+                    f"Исполнение точного списка заявок: {report.state}\n"
                     f"Digest: {report.proposal_digest}\n"
                     f"Последнее обновление: {report.updated_at.isoformat()}"
                 )
@@ -229,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
             else:
                 print(
-                    f"Сверка точного пакета: {report.state}\n"
+                    f"Сверка точного списка заявок: {report.state}\n"
                     f"Digest: {report.proposal_digest}\n"
                     f"Последнее обновление: {report.updated_at.isoformat()}"
                 )
@@ -247,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(receipt.as_dict(), ensure_ascii=False, indent=2))
             else:
                 print(
-                    "Точный пакет подтверждён в Codex.\n"
+                    "Точный список заявок подтверждён в Codex.\n"
                     f"Digest: {receipt.approval.proposal_digest}\n"
                     "Подтверждение действует до: "
                     f"{receipt.approval.expires_at.isoformat()}\n"
@@ -344,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
                         payload["confirmation_examples"]
                     )
                     print(
-                        "Точный пакет лимитных заявок "
+                        "Точный список лимитных заявок "
                         "сформирован.\n"
                         f"{order_lines}\n"
                         f"Digest: {proposal.digest}\n"
