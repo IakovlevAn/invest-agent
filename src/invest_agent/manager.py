@@ -40,13 +40,11 @@ class ManagerAction(StrEnum):
 @dataclass(frozen=True, slots=True)
 class ManagerPolicy:
     max_bond_issuer_share_after_add: Decimal
-    speculative_reduce_fraction: Decimal
+    rating_stress_loss: tuple[tuple[RatingBand, Decimal], ...]
     minimum_allocation_rub: Decimal
     allocation_rounding_rub: Decimal
     maximum_single_purchase_share_of_cash: Decimal
     minimum_cash_reserve_rub: Decimal = Decimal("0")
-    concentration_trim_fraction: Decimal = Decimal("1")
-    maximum_noncritical_reduce_fraction: Decimal = Decimal("0.50")
     maximum_purchase_count: int = 8
     maximum_list_level_for_add: int = 2
     minimum_add_yield_percent: Decimal = Decimal("20")
@@ -60,14 +58,21 @@ class ManagerPolicy:
         with Path(path).open("rb") as source:
             document = tomllib.load(source)
         raw = document["manager"]
+        stress_loss = document["credit"]["stress_loss"]
         policy = cls(
             max_bond_issuer_share_after_add=_fraction(
                 raw["max_bond_issuer_share_after_add"],
                 "manager.max_bond_issuer_share_after_add",
             ),
-            speculative_reduce_fraction=_fraction(
-                raw["speculative_reduce_fraction"],
-                "manager.speculative_reduce_fraction",
+            rating_stress_loss=tuple(
+                (
+                    band,
+                    _fraction(
+                        stress_loss[band.value],
+                        f"credit.stress_loss.{band.value}",
+                    ),
+                )
+                for band in RatingBand
             ),
             minimum_allocation_rub=_positive_decimal(
                 raw["minimum_allocation_rub"],
@@ -84,14 +89,6 @@ class ManagerPolicy:
             minimum_cash_reserve_rub=_positive_decimal(
                 raw["minimum_cash_reserve_rub"],
                 "manager.minimum_cash_reserve_rub",
-            ),
-            concentration_trim_fraction=_fraction(
-                raw["concentration_trim_fraction"],
-                "manager.concentration_trim_fraction",
-            ),
-            maximum_noncritical_reduce_fraction=_fraction(
-                raw["maximum_noncritical_reduce_fraction"],
-                "manager.maximum_noncritical_reduce_fraction",
             ),
             maximum_purchase_count=_positive_int(
                 raw["maximum_purchase_count"],
@@ -124,15 +121,16 @@ class ManagerPolicy:
         )
         if policy.minimum_add_yield_percent >= policy.maximum_add_yield_percent:
             raise ValueError("universe yield range is invalid")
-        if (
-            policy.speculative_reduce_fraction
-            > policy.maximum_noncritical_reduce_fraction
-        ):
-            raise ValueError(
-                "manager.speculative_reduce_fraction must not exceed "
-                "manager.maximum_noncritical_reduce_fraction"
-            )
         return policy
+
+    def stress_loss_fraction(self, band: RatingBand | None) -> Decimal:
+        effective_band = RatingBand.UNRATED if band is None else band
+        try:
+            return dict(self.rating_stress_loss)[effective_band]
+        except KeyError as error:
+            raise ValueError(
+                f"credit stress loss is missing for {effective_band.value}"
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +143,7 @@ class BondManagerDecision:
     issuer_share_of_bonds: Decimal
     action: ManagerAction
     broad_rating_band: RatingBand | None
+    stress_loss_fraction: Decimal
     comparable_yield_percent: Decimal | None
     duration_days: Decimal | None
     recommended_add_rub: Decimal
@@ -152,6 +151,15 @@ class BondManagerDecision:
     reasons: tuple[str, ...]
     exit_triggers: tuple[str, ...]
     credit_warning: bool = False
+
+    @property
+    def risk_return_score(self) -> Decimal | None:
+        if self.comparable_yield_percent is None:
+            return None
+        return _risk_return_score(
+            self.comparable_yield_percent,
+            self.stress_loss_fraction,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +171,7 @@ class NewBondManagerDecision:
     emitter_name: str
     current_issuer_share_of_bonds: Decimal
     broad_rating_band: RatingBand
+    stress_loss_fraction: Decimal
     comparable_yield_percent: Decimal
     duration_days: Decimal
     estimated_lot_cost_rub: Decimal
@@ -175,6 +184,13 @@ class NewBondManagerDecision:
     moex_security_url: str
     moex_market_url: str
     list_level: int = 2
+
+    @property
+    def risk_return_score(self) -> Decimal:
+        return _risk_return_score(
+            self.comparable_yield_percent,
+            self.stress_loss_fraction,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +286,9 @@ class PortfolioManagerReport:
                 "MOEX yield is a market indication, not a guaranteed return",
                 "floaters without a rate scenario have no comparable expected yield",
                 "rating bands are diagnostic classes, not default probabilities",
+                "credit haircuts are configurable stress scenarios, not expected losses",
+                "issuer reductions are sized by drawdown and concentration "
+                "budgets, not fixed sell fractions",
                 "amounts are allocation targets, not executable orders or lot calculations",
                 "new candidates require BCS availability and exact lot-price verification",
                 "additions to existing bonds obey the configured maximum listing level",
@@ -317,14 +336,19 @@ class PortfolioManager:
             )
             for record in bonds.positions
         ]
-        decisions = self._apply_concentration_trims(decisions, bonds)
-        new_candidates = _new_candidate_decisions(universe)
+        new_candidates = _new_candidate_decisions(universe, self._manager_policy)
+        decisions = self._apply_risk_adjusted_issuer_limits(
+            decisions,
+            bonds,
+            new_candidates,
+        )
         planned_sale_proceeds = _planned_sale_proceeds(decisions)
         decisions, new_candidates = self._allocate_cash(
             decisions,
             new_candidates,
             bonds,
             audit.cash_rub + planned_sale_proceeds,
+            audit.managed_value_rub,
         )
         current_yield, yield_coverage = _comparable_yield(bonds.positions)
         stressed_value = sum(
@@ -377,7 +401,7 @@ class PortfolioManager:
             new_bond_candidates=tuple(
                 sorted(
                     new_candidates,
-                    key=lambda item: (-item.ranking_score, item.ticker),
+                    key=lambda item: (-item.risk_return_score, item.ticker),
                 )
             ),
             scenarios=scenarios,
@@ -449,6 +473,7 @@ class PortfolioManager:
             candidates,
             bonds,
             report.cash_rub + _planned_sale_proceeds(decisions),
+            report.managed_value_rub,
         )
         scenarios = self._scenarios(
             audit,
@@ -461,7 +486,10 @@ class PortfolioManager:
             report,
             decisions=tuple(sorted(decisions, key=_decision_sort_key)),
             new_bond_candidates=tuple(
-                sorted(candidates, key=lambda item: (-item.ranking_score, item.ticker))
+                sorted(
+                    candidates,
+                    key=lambda item: (-item.risk_return_score, item.ticker),
+                )
             ),
             scenarios=scenarios,
             primary_action=_primary_action(decisions, candidates),
@@ -503,12 +531,11 @@ class PortfolioManager:
                 reasons.extend(signal.message for signal in critical)
                 reasons.append("до проверки текущего статуса новые покупки запрещены")
             elif speculative:
-                action = ManagerAction.REDUCE_RISK
+                action = ManagerAction.DO_NOT_ADD
                 reasons.extend(signal.message for signal in warnings)
-                reasons.append("риск дефолта важнее высокой текущей доходности")
                 reasons.append(
-                    "один некритический рейтинговый сигнал означает пошаговое "
-                    "сокращение, а не автоматический полный выход"
+                    "размер позиции определяется её доходностью на единицу "
+                    "сценарного кредитного риска"
                 )
             elif warnings:
                 action = ManagerAction.DO_NOT_ADD
@@ -559,19 +586,9 @@ class PortfolioManager:
                 action = ManagerAction.HOLD
                 reasons.append("доходность ниже тактической цели, но позиция может снижать риск")
 
-        reduction = Decimal("0")
-        if action is ManagerAction.REDUCE_RISK:
-            reduction = (
-                record.position.market_value_rub
-                if self._manager_policy.speculative_reduce_fraction == Decimal("1")
-                else _round_down(
-                    record.position.market_value_rub
-                    * self._manager_policy.speculative_reduce_fraction,
-                    self._manager_policy.allocation_rounding_rub,
-                )
-            )
         if action is ManagerAction.URGENT_REVIEW:
             exits.insert(0, "подтверждение, что технический/default-флаг MOEX актуален")
+        stress_loss_fraction = self._manager_policy.stress_loss_fraction(band)
         return BondManagerDecision(
             ticker=record.position.ticker,
             isin=record.moex.facts.isin,
@@ -585,119 +602,128 @@ class PortfolioManager:
             issuer_share_of_bonds=issuer_share,
             action=action,
             broad_rating_band=band,
+            stress_loss_fraction=stress_loss_fraction,
             comparable_yield_percent=comparable_yield,
             duration_days=duration,
             recommended_add_rub=Decimal("0"),
-            recommended_reduce_rub=reduction,
+            recommended_reduce_rub=Decimal("0"),
             reasons=tuple(dict.fromkeys(reasons)),
             exit_triggers=tuple(exits),
             credit_warning=has_credit_warning,
         )
 
-    def _apply_concentration_trims(
+    def _apply_risk_adjusted_issuer_limits(
         self,
         decisions: list[BondManagerDecision],
         bonds: BondMarketReport,
+        new_candidates: list[NewBondManagerDecision],
     ) -> list[BondManagerDecision]:
-        original = list(decisions)
         updated = list(decisions)
-        target_share = self._manager_policy.max_bond_issuer_share_after_add
-        for _ in range(20):
-            changed = False
-            for exposure in bonds.issuer_exposures:
-                eligible_indexes = sorted(
-                    (
-                        index
-                        for index, decision in enumerate(updated)
-                        if decision.emitter_id == exposure.emitter_id
-                        and decision.credit_warning
-                        and decision.action
-                        in {ManagerAction.DO_NOT_ADD, ManagerAction.REDUCE_RISK}
-                    ),
-                    key=lambda index: -updated[index].market_value_rub,
+        maximum_issuer_value = (
+            bonds.bond_value_rub
+            * self._manager_policy.max_bond_issuer_share_after_add
+        )
+        issuer_stress_budget = (
+            maximum_issuer_value * self._investment_policy.maximum_drawdown
+        )
+        replacement_score = max(
+            (candidate.risk_return_score for candidate in new_candidates),
+            default=None,
+        )
+        emitter_ids = sorted({decision.emitter_id for decision in decisions})
+        for emitter_id in emitter_ids:
+            issuer_indexes = [
+                index
+                for index, decision in enumerate(updated)
+                if decision.emitter_id == emitter_id
+                and decision.action is not ManagerAction.URGENT_REVIEW
+            ]
+            indexes = [
+                index
+                for index in issuer_indexes
+                if updated[index].credit_warning
+            ]
+            if not indexes:
+                continue
+            issuer_value = sum(
+                (updated[index].market_value_rub for index in issuer_indexes),
+                Decimal("0"),
+            )
+            issuer_stress_loss = sum(
+                (
+                    updated[index].market_value_rub
+                    * updated[index].stress_loss_fraction
+                    for index in issuer_indexes
+                ),
+                Decimal("0"),
+            )
+            concentration_remaining = max(
+                Decimal("0"), issuer_value - maximum_issuer_value
+            )
+            stress_remaining = max(
+                Decimal("0"), issuer_stress_loss - issuer_stress_budget
+            )
+            if concentration_remaining <= 0 and stress_remaining <= 0:
+                continue
+            indexes.sort(
+                key=lambda index: (
+                    updated[index].risk_return_score is not None,
+                    updated[index].risk_return_score or Decimal("0"),
+                    -updated[index].stress_loss_fraction,
                 )
-                if not eligible_indexes:
+            )
+            for index in indexes:
+                if concentration_remaining <= 0 and stress_remaining <= 0:
+                    break
+                decision = updated[index]
+                stress_driven = (
+                    Decimal("0")
+                    if decision.stress_loss_fraction <= 0
+                    else stress_remaining / decision.stress_loss_fraction
+                )
+                reduction = min(
+                    decision.market_value_rub,
+                    _round_up(
+                        max(concentration_remaining, stress_driven),
+                        self._manager_policy.allocation_rounding_rub,
+                    ),
+                )
+                if reduction < self._manager_policy.minimum_allocation_rub:
                     continue
-                sleeve_after_sales = bonds.bond_value_rub - _planned_sale_proceeds(updated)
-                allowed_value = max(Decimal("0"), sleeve_after_sales * target_share)
-                issuer_reduction = sum(
-                    (updated[index].recommended_reduce_rub for index in eligible_indexes),
-                    Decimal("0"),
-                )
-                required_reduction = _round_up(
-                    max(Decimal("0"), exposure.value_rub - allowed_value),
-                    self._manager_policy.allocation_rounding_rub,
-                )
-                remaining = required_reduction - issuer_reduction
-                for index in eligible_indexes:
-                    if remaining <= 0:
-                        break
-                    decision = updated[index]
-                    capacity = (
-                        decision.market_value_rub - decision.recommended_reduce_rub
+                reasons = list(decision.reasons)
+                if concentration_remaining > 0:
+                    reasons.append(
+                        "доля эмитента превышает портфельный лимит "
+                        f"{self._manager_policy.max_bond_issuer_share_after_add:.0%}"
                     )
-                    extra = min(remaining, capacity)
-                    if extra <= 0:
-                        continue
-                    updated[index] = replace(
-                        decision,
-                        action=ManagerAction.REDUCE_RISK,
-                        recommended_reduce_rub=(
-                            decision.recommended_reduce_rub + extra
-                        ),
-                        reasons=tuple(
-                            dict.fromkeys(
-                                (
-                                    *decision.reasons,
-                                    "концентрация эмитента выше лимита 15% после сокращений",
-                                )
-                            )
-                        ),
+                if stress_remaining > 0:
+                    reasons.append(
+                        "сценарный убыток эмитента превышает выделенный ему "
+                        "бюджет стресс-риска"
                     )
-                    remaining -= extra
-                    changed = True
-            if not changed:
-                break
-        gradual: list[BondManagerDecision] = []
-        for initial, fully_trimmed in zip(original, updated, strict=True):
-            concentration_extra = (
-                fully_trimmed.recommended_reduce_rub
-                - initial.recommended_reduce_rub
-            )
-            if concentration_extra <= 0:
-                gradual.append(initial)
-                continue
-            scaled_extra = _round_up(
-                concentration_extra
-                * self._manager_policy.concentration_trim_fraction,
-                self._manager_policy.allocation_rounding_rub,
-            )
-            if scaled_extra < self._manager_policy.minimum_allocation_rub:
-                gradual.append(initial)
-                continue
-            gradual.append(
-                replace(
-                    initial,
+                if (
+                    decision.risk_return_score is not None
+                    and replacement_score is not None
+                ):
+                    reasons.append(
+                        "доходность/стресс текущего выпуска "
+                        f"{decision.risk_return_score:.2f}; лучшая отобранная "
+                        f"альтернатива {replacement_score:.2f}"
+                    )
+                updated[index] = replace(
+                    decision,
                     action=ManagerAction.REDUCE_RISK,
-                    recommended_reduce_rub=min(
-                        _round_down(
-                            initial.market_value_rub
-                            * self._manager_policy.maximum_noncritical_reduce_fraction,
-                            self._manager_policy.allocation_rounding_rub,
-                        ),
-                        initial.recommended_reduce_rub + scaled_extra,
-                    ),
-                    reasons=tuple(
-                        dict.fromkeys(
-                            (
-                                *initial.reasons,
-                                "пошагово снижать концентрацию эмитента к лимиту 15%",
-                            )
-                        )
-                    ),
+                    recommended_reduce_rub=reduction,
+                    reasons=tuple(dict.fromkeys(reasons)),
                 )
-            )
-        return gradual
+                concentration_remaining = max(
+                    Decimal("0"), concentration_remaining - reduction
+                )
+                stress_remaining = max(
+                    Decimal("0"),
+                    stress_remaining - reduction * decision.stress_loss_fraction,
+                )
+        return updated
 
     def _allocate_cash(
         self,
@@ -705,6 +731,7 @@ class PortfolioManager:
         new_candidates: list[NewBondManagerDecision],
         bonds: BondMarketReport,
         cash_rub: Decimal,
+        managed_value_rub: Decimal,
     ) -> tuple[list[BondManagerDecision], list[NewBondManagerDecision]]:
         remaining = max(
             Decimal("0"),
@@ -715,13 +742,13 @@ class PortfolioManager:
         candidates: list[
             tuple[Decimal, str, BondManagerDecision | NewBondManagerDecision]
         ] = [
-            (_risk_adjusted_yield(decision), "EXISTING", decision)
+            (decision.comparable_yield_percent, "EXISTING", decision)
             for decision in decisions
             if decision.action is ManagerAction.ADD_CANDIDATE
             and decision.comparable_yield_percent is not None
         ]
         candidates.extend(
-            (candidate.ranking_score, "NEW", candidate)
+            (candidate.comparable_yield_percent, "NEW", candidate)
             for candidate in new_candidates
         )
         candidates.sort(
@@ -741,16 +768,39 @@ class PortfolioManager:
             remaining * self._manager_policy.maximum_single_purchase_share_of_cash,
             self._manager_policy.allocation_rounding_rub,
         )
+        maximum_stress_loss = (
+            managed_value_rub * self._investment_policy.maximum_drawdown
+        )
+        projected_stress_loss = sum(
+            (
+                max(
+                    Decimal("0"),
+                    decision.market_value_rub - decision.recommended_reduce_rub,
+                )
+                * decision.stress_loss_fraction
+                for decision in decisions
+            ),
+            Decimal("0"),
+        )
         allocated_count = 0
         for _, candidate_type, candidate in candidates:
             current_issuer_value = issuer_values.get(candidate.emitter_id, Decimal("0"))
+            risk_adjusted_share_limit = _risk_adjusted_issuer_share_limit(
+                self._manager_policy.max_bond_issuer_share_after_add,
+                self._investment_policy.maximum_drawdown,
+                candidate.stress_loss_fraction,
+            )
             capacity = _issuer_add_capacity(
                 current_value=current_issuer_value,
                 sleeve_value=bonds.bond_value_rub,
-                maximum_share=self._manager_policy.max_bond_issuer_share_after_add,
+                maximum_share=risk_adjusted_share_limit,
             )
+            stress_capacity = max(
+                Decimal("0"),
+                maximum_stress_loss - projected_stress_loss,
+            ) / candidate.stress_loss_fraction
             amount = _round_down(
-                min(remaining, capacity, maximum_purchase),
+                min(remaining, capacity, stress_capacity, maximum_purchase),
                 self._manager_policy.allocation_rounding_rub,
             )
             if amount < self._manager_policy.minimum_allocation_rub:
@@ -766,6 +816,7 @@ class PortfolioManager:
                 index = updated_new.index(new)
                 updated_new[index] = replace(new, recommended_add_rub=amount)
             issuer_values[candidate.emitter_id] = current_issuer_value + amount
+            projected_stress_loss += amount * candidate.stress_loss_fraction
             remaining -= amount
             allocated_count += 1
             if (
@@ -979,6 +1030,7 @@ def _band_rank(band: RatingBand) -> int:
 
 def _new_candidate_decisions(
     universe: BondUniverseReport | None,
+    manager_policy: ManagerPolicy,
 ) -> list[NewBondManagerDecision]:
     if universe is None:
         return []
@@ -993,6 +1045,9 @@ def _new_candidate_decisions(
                 candidate.current_issuer_share_of_bonds
             ),
             broad_rating_band=candidate.broad_rating_band,
+            stress_loss_fraction=manager_policy.stress_loss_fraction(
+                candidate.broad_rating_band
+            ),
             comparable_yield_percent=candidate.effective_yield_percent,
             duration_days=candidate.duration_days,
             estimated_lot_cost_rub=candidate.estimated_lot_cost_rub,
@@ -1010,14 +1065,26 @@ def _new_candidate_decisions(
     ]
 
 
-def _risk_adjusted_yield(decision: BondManagerDecision) -> Decimal:
-    assert decision.comparable_yield_percent is not None
-    penalty = (
-        Decimal("4")
-        if decision.broad_rating_band is None
-        else Decimal(_band_rank(decision.broad_rating_band))
+def _risk_return_score(
+    comparable_yield_percent: Decimal,
+    stress_loss_fraction: Decimal,
+) -> Decimal:
+    if stress_loss_fraction <= 0:
+        raise ValueError("stress loss fraction must be positive")
+    return comparable_yield_percent / (stress_loss_fraction * Decimal("100"))
+
+
+def _risk_adjusted_issuer_share_limit(
+    concentration_limit: Decimal,
+    maximum_drawdown: Decimal,
+    stress_loss_fraction: Decimal,
+) -> Decimal:
+    if stress_loss_fraction <= 0:
+        raise ValueError("stress loss fraction must be positive")
+    return min(
+        concentration_limit,
+        concentration_limit * maximum_drawdown / stress_loss_fraction,
     )
-    return decision.comparable_yield_percent - penalty
 
 
 def _issuer_add_capacity(
@@ -1142,6 +1209,8 @@ def _decision_as_dict(decision: BondManagerDecision) -> dict[str, Any]:
         "broad_rating_band": (
             None if decision.broad_rating_band is None else decision.broad_rating_band.value
         ),
+        "stress_loss_fraction": _decimal_text(decision.stress_loss_fraction),
+        "risk_return_score": _optional_decimal_text(decision.risk_return_score),
         "comparable_yield_percent": _optional_decimal_text(
             decision.comparable_yield_percent
         ),
@@ -1165,6 +1234,8 @@ def _new_candidate_as_dict(candidate: NewBondManagerDecision) -> dict[str, Any]:
             candidate.current_issuer_share_of_bonds
         ),
         "broad_rating_band": candidate.broad_rating_band.value,
+        "stress_loss_fraction": _decimal_text(candidate.stress_loss_fraction),
+        "risk_return_score": _decimal_text(candidate.risk_return_score),
         "comparable_yield_percent": _decimal_text(
             candidate.comparable_yield_percent
         ),

@@ -131,9 +131,9 @@ def manager_report_and_snapshot():
     policy = InvestmentPolicy.from_toml(POLICY_PATH)
     report = PortfolioManager(
         policy,
-        ManagerPolicy(
+        replace(
+            ManagerPolicy.from_toml(POLICY_PATH),
             max_bond_issuer_share_after_add=Decimal("0.15"),
-            speculative_reduce_fraction=Decimal("0.50"),
             minimum_allocation_rub=Decimal("5000"),
             allocation_rounding_rub=Decimal("100"),
             maximum_single_purchase_share_of_cash=Decimal("0.40"),
@@ -178,9 +178,9 @@ class ExactTradeProposalTests(unittest.TestCase):
         policy = InvestmentPolicy.from_toml(POLICY_PATH)
         report = PortfolioManager(
             policy,
-            ManagerPolicy(
+            replace(
+                ManagerPolicy.from_toml(POLICY_PATH),
                 max_bond_issuer_share_after_add=Decimal("0.15"),
-                speculative_reduce_fraction=Decimal("0.50"),
                 minimum_allocation_rub=Decimal("5000"),
                 allocation_rounding_rub=Decimal("100"),
                 maximum_single_purchase_share_of_cash=Decimal("0.40"),
@@ -230,9 +230,9 @@ class ExactTradeProposalTests(unittest.TestCase):
 
         order = proposal.orders[0]
         self.assertEqual(order.limit_price, Decimal("99.90"))
-        self.assertEqual(order.lots, 10)
-        self.assertEqual(order.quantity_units, 10)
-        self.assertEqual(order.estimated_cash_rub, Decimal("10090.00"))
+        self.assertEqual(order.lots, 20)
+        self.assertEqual(order.quantity_units, 20)
+        self.assertEqual(order.estimated_cash_rub, Decimal("20180.00"))
         self.assertEqual(proposal.expires_at, NOW + timedelta(minutes=10))
         self.assertEqual(order.order_valid_until, NOW + timedelta(hours=1))
         self.assertEqual(len(proposal.digest), 64)

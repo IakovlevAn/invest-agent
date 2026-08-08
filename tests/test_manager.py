@@ -39,12 +39,16 @@ POLICY_PATH = Path(__file__).parents[1] / "config" / "investment_policy.toml"
 
 
 def manager_policy() -> ManagerPolicy:
-    return ManagerPolicy(
+    return replace(
+        ManagerPolicy.from_toml(POLICY_PATH),
         max_bond_issuer_share_after_add=Decimal("0.15"),
-        speculative_reduce_fraction=Decimal("0.50"),
         minimum_allocation_rub=Decimal("5000"),
         allocation_rounding_rub=Decimal("100"),
         maximum_single_purchase_share_of_cash=Decimal("0.40"),
+        maximum_list_level_for_add=2,
+        minimum_add_turnover_rub=Decimal("0"),
+        minimum_add_yield_percent=Decimal("20"),
+        maximum_add_yield_percent=Decimal("30"),
     )
 
 
@@ -348,12 +352,12 @@ class PortfolioManagerTests(unittest.TestCase):
         self.assertEqual(decisions["RU000A000002"].action, ManagerAction.URGENT_REVIEW)
         self.assertEqual(decisions["RU000A000003"].action, ManagerAction.REDUCE_RISK)
         speculative_reduction = decisions["RU000A000003"].recommended_reduce_rub
-        self.assertEqual(speculative_reduction, Decimal("10000"))
+        self.assertEqual(speculative_reduction, Decimal("17300"))
         scenario = next(item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH")
         self.assertFalse(scenario.recommended)
         self.assertEqual(report.primary_action, "VERIFY_CRITICAL_FLAG_BEFORE_NEW_RISK")
 
-    def test_noncritical_speculative_and_concentration_cannot_sell_over_half(
+    def test_speculative_position_is_sized_from_stress_and_concentration_budgets(
         self,
     ) -> None:
         speculative = bond(
@@ -376,11 +380,7 @@ class PortfolioManagerTests(unittest.TestCase):
         )
         manager = PortfolioManager(
             InvestmentPolicy.from_toml(POLICY_PATH),
-            replace(
-                manager_policy(),
-                concentration_trim_fraction=Decimal("0.50"),
-                maximum_noncritical_reduce_fraction=Decimal("0.50"),
-            ),
+            manager_policy(),
             now=lambda: NOW,
         )
 
@@ -388,11 +388,11 @@ class PortfolioManagerTests(unittest.TestCase):
 
         self.assertEqual(
             report.decisions[0].recommended_reduce_rub,
-            Decimal("50000"),
+            Decimal("95500"),
         )
         self.assertIn(
-            "один некритический рейтинговый сигнал означает пошаговое "
-            "сокращение, а не автоматический полный выход",
+            "сценарный убыток эмитента превышает выделенный ему "
+            "бюджет стресс-риска",
             report.decisions[0].reasons,
         )
 
@@ -489,10 +489,13 @@ class PortfolioManagerTests(unittest.TestCase):
 
         self.assertTrue(scenario.recommended)
         self.assertEqual(scenario.invested_cash_rub, Decimal("0"))
-        self.assertEqual(scenario.estimated_sale_proceeds_rub, Decimal("10000"))
-        self.assertEqual(scenario.remaining_cash_rub, Decimal("60000"))
-        self.assertEqual(scenario.net_bond_change_rub, Decimal("-10000"))
-        self.assertEqual(scenario.projected_bond_share_managed, Decimal("0.6"))
+        self.assertEqual(scenario.estimated_sale_proceeds_rub, Decimal("15500"))
+        self.assertEqual(scenario.remaining_cash_rub, Decimal("65500"))
+        self.assertEqual(scenario.net_bond_change_rub, Decimal("-15500"))
+        self.assertEqual(
+            scenario.projected_bond_share_managed,
+            Decimal("0.5633333333333333333333333333"),
+        )
 
     def test_warning_freezes_addition_and_output_never_creates_orders(self) -> None:
         record = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")
@@ -516,15 +519,9 @@ class PortfolioManagerTests(unittest.TestCase):
         self.assertTrue(payload["trade_gate"]["explicit_confirmation_required"])
         self.assertEqual(len(payload["scenarios"]), 3)
 
-        gradual_manager = PortfolioManager(
-            InvestmentPolicy.from_toml(POLICY_PATH),
-            replace(manager_policy(), concentration_trim_fraction=Decimal("0.50")),
-            now=lambda: NOW,
-        )
-        gradual = gradual_manager.recommend(audit, bonds, credit)
         self.assertEqual(
-            gradual.decisions[0].recommended_reduce_rub,
-            Decimal("5000"),
+            report.decisions[0].recommended_reduce_rub,
+            Decimal("8500"),
         )
 
     def test_allocates_cash_to_ranked_new_issuers_without_creating_orders(self) -> None:
@@ -541,7 +538,7 @@ class PortfolioManagerTests(unittest.TestCase):
                 emitter_id=index,
                 emitter_name=f"Новый эмитент {index}",
                 current_issuer_share_of_bonds=Decimal("0"),
-                broad_rating_band=RatingBand.STRONG,
+                broad_rating_band=band,
                 effective_yield_percent=Decimal(yield_percent),
                 duration_days=Decimal("500"),
                 lot_size=1,
@@ -553,7 +550,10 @@ class PortfolioManagerTests(unittest.TestCase):
                 moex_security_url="https://iss.moex.test/security",
                 moex_market_url="https://iss.moex.test/market",
             )
-            for index, yield_percent, score in ((2, "24", "22"), (3, "23", "21"))
+            for index, yield_percent, score, band in (
+                (2, "24", "22", RatingBand.STRONG),
+                (3, "23", "21", RatingBand.HIGH),
+            )
         )
         universe = BondUniverseReport(
             account_ref=audit.account_ref,
@@ -620,6 +620,12 @@ class PortfolioManagerTests(unittest.TestCase):
             ),
             1,
         )
+        selected = next(
+            candidate
+            for candidate in limited.new_bond_candidates
+            if candidate.recommended_add_rub > 0
+        )
+        self.assertEqual(selected.isin, "RU000A000002")
 
     def test_rejects_cross_account_inputs(self) -> None:
         record = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")

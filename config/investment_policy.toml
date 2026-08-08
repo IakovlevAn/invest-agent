@@ -42,6 +42,19 @@ material_blocked_share = 0.05
 # Freshness diagnostic only. A recent rating does not imply low default risk.
 rating_max_age_days = 400
 
+# Scenario loss assumptions for the constrained risk/return model. These are
+# stress haircuts, not probabilities of default or expected losses.
+[credit.stress_loss]
+HIGHEST = 0.02
+HIGH = 0.04
+STRONG = 0.07
+ADEQUATE = 0.15
+SPECULATIVE = 0.50
+HIGH_RISK = 0.70
+VERY_HIGH_RISK = 0.90
+DEFAULT = 1.00
+UNRATED = 1.00
+
 [fundamentals]
 # Diagnostic thresholds only. Standalone RAS is not consolidated group data.
 financial_max_age_days = 550
@@ -54,11 +67,6 @@ near_term_event_days = 365
 [manager]
 # Fast recommendation hot path. These are allocation guards, not trade orders.
 max_bond_issuer_share_after_add = 0.15
-# A speculative rating is a risk signal, not proof of imminent default. Reduce
-# in stages and require separate critical evidence before considering a full exit.
-speculative_reduce_fraction = 0.50
-maximum_noncritical_reduce_fraction = 0.50
-concentration_trim_fraction = 0.50
 minimum_allocation_rub = 5000
 allocation_rounding_rub = 100
 maximum_single_purchase_share_of_cash = 0.30

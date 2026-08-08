@@ -712,9 +712,6 @@ def _projected_credit_stress_package(
     by_isin = {isin: (side, amount) for isin, side, amount in actions}
     stressed_value = Decimal("0")
     for decision in report.decisions:
-        shock = _rating_shock(
-            None if decision.broad_rating_band is None else decision.broad_rating_band.value
-        )
         value = decision.market_value_rub
         action = by_isin.get(decision.isin)
         if action is not None:
@@ -724,7 +721,7 @@ def _projected_credit_stress_package(
                 if side is Side.SELL
                 else value + amount
             )
-        stressed_value += value * shock
+        stressed_value += value * decision.stress_loss_fraction
     current_isins = {decision.isin for decision in report.decisions}
     for isin, (side, amount) in by_isin.items():
         if side is not Side.BUY or isin in current_isins:
@@ -734,26 +731,12 @@ def _projected_credit_stress_package(
             None,
         )
         if candidate is not None:
-            stressed_value += amount * _rating_shock(candidate.broad_rating_band.value)
+            stressed_value += amount * candidate.stress_loss_fraction
     return (
         Decimal("0")
         if report.managed_value_rub == 0
         else stressed_value / report.managed_value_rub
     )
-
-
-def _rating_shock(value: str | None) -> Decimal:
-    return {
-        "HIGHEST": Decimal("0.02"),
-        "HIGH": Decimal("0.04"),
-        "STRONG": Decimal("0.07"),
-        "ADEQUATE": Decimal("0.15"),
-        "SPECULATIVE": Decimal("0.50"),
-        "UNRATED": Decimal("1.00"),
-        None: Decimal("1.00"),
-    }[value]
-
-
 def _align_price(price: Decimal, step: Decimal, side: Side) -> Decimal:
     rounding = ROUND_CEILING if side is Side.BUY else ROUND_FLOOR
     steps = (price / step).to_integral_value(rounding=rounding)
