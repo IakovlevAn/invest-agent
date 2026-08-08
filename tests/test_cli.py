@@ -4,11 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from invest_agent.cli import PROJECT_ROOT, _token_file_from_local_env
+from invest_agent.cli import PROJECT_ROOT, _token_file_from_local_env, build_parser
 from invest_agent.secrets import SecretStoreError
 
 
 class LocalEnvTests(unittest.TestCase):
+    def test_recommend_command_is_available(self) -> None:
+        args = build_parser().parse_args(["recommend", "--format", "json"])
+
+        self.assertEqual(args.command, "recommend")
+        self.assertEqual(args.format, "json")
+
     def test_reads_only_token_file_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             env_file = Path(directory) / ".env"

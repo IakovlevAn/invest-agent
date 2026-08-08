@@ -42,6 +42,133 @@ class FakeTransport:
 
 
 class MoexIssClientTests(unittest.TestCase):
+    def test_reads_compact_bond_universe_and_estimates_lot_cost(self) -> None:
+        payload = {
+            "securities": {
+                "columns": [
+                    "SECID",
+                    "BOARDID",
+                    "SHORTNAME",
+                    "ISIN",
+                    "LOTSIZE",
+                    "FACEVALUE",
+                    "FACEUNIT",
+                    "STATUS",
+                    "LISTLEVEL",
+                    "MATDATE",
+                    "ISSUESIZE",
+                    "ACCRUEDINT",
+                    "PREVPRICE",
+                    "YIELDATPREVWAPRICE",
+                ],
+                "data": [[
+                    "RU000A10TEST",
+                    "TQCB",
+                    "Тест 1Р1",
+                    "RU000A10TEST",
+                    2,
+                    1000,
+                    "SUR",
+                    "A",
+                    2,
+                    "2029-05-18",
+                    1000000,
+                    10,
+                    99,
+                    21,
+                ]],
+            },
+            "marketdata": {
+                "columns": list(
+                    (
+                        "SECID",
+                        "BOARDID",
+                        "BID",
+                        "OFFER",
+                        "LAST",
+                        "WAPRICE",
+                        "YIELD",
+                        "YIELDATWAPRICE",
+                        "YIELDTOOFFER",
+                        "DURATION",
+                        "NUMTRADES",
+                        "VOLTODAY",
+                        "VALTODAY_RUR",
+                        "TRADINGSTATUS",
+                        "UPDATETIME",
+                        "SYSTIME",
+                    )
+                ),
+                "data": [[
+                    "RU000A10TEST",
+                    "TQCB",
+                    99.9,
+                    100.1,
+                    100,
+                    100,
+                    22,
+                    22.1,
+                    None,
+                    500,
+                    20,
+                    100,
+                    100000,
+                    "T",
+                    "12:00:00",
+                    "2026-08-08 12:00:00",
+                ]],
+            },
+            "marketdata_yields": {
+                "columns": [
+                    "SECID",
+                    "BOARDID",
+                    "PRICE",
+                    "YIELDDATE",
+                    "YIELDDATETYPE",
+                    "EFFECTIVEYIELD",
+                    "DURATION",
+                    "ZSPREADBP",
+                    "GSPREADBP",
+                    "WAPRICE",
+                    "EFFECTIVEYIELDWAPRICE",
+                    "DURATIONWAPRICE",
+                    "TRADEMOMENT",
+                    "SYSTIME",
+                ],
+                "data": [[
+                    "RU000A10TEST",
+                    "TQCB",
+                    100.1,
+                    "2029-05-18",
+                    "MATDATE",
+                    22.2,
+                    501,
+                    700,
+                    710,
+                    100,
+                    22.3,
+                    501,
+                    "2026-08-08 11:59:00",
+                    "2026-08-08 12:00:00",
+                ]],
+            },
+        }
+        transport = FakeTransport([response(200, payload)])
+        client = MoexIssClient(transport=transport, now=lambda: NOW)
+
+        quotes = client.fetch_bond_universe()
+
+        self.assertEqual(len(quotes), 1)
+        self.assertEqual(quotes[0].effective_yield_percent, Decimal("22.3"))
+        self.assertEqual(quotes[0].estimated_lot_cost_rub, Decimal("2022.0"))
+        self.assertEqual(quotes[0].issue_notional_rub, Decimal("1000000000"))
+        parsed = urllib.parse.urlparse(transport.calls[0]["url"])  # type: ignore[arg-type]
+        query = urllib.parse.parse_qs(parsed.query)
+        self.assertEqual(
+            query["iss.only"],
+            ["securities,marketdata,marketdata_yields"],
+        )
+
     def test_reads_primary_board_bond_market_and_emitter(self) -> None:
         transport = FakeTransport(
             [

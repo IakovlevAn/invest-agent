@@ -13,12 +13,13 @@ class CodexSkillContractTests(unittest.TestCase):
         cls.project_rules = (ROOT / "AGENTS.md").read_text()
 
     def test_live_portfolio_is_required_for_decisions(self) -> None:
-        self.assertIn("uv run invest-agent portfolio --format json", self.skill)
-        self.assertIn("uv run invest-agent audit --format json", self.skill)
-        self.assertIn("uv run invest-agent bonds --format json", self.skill)
-        self.assertIn("uv run invest-agent credit --format json", self.skill)
-        self.assertIn("uv run invest-agent fundamentals --format json", self.skill)
+        self.assertIn("uv run invest-agent recommend --format json", self.skill)
         self.assertIn("Do not reconstruct holdings from conversation memory", self.skill)
+        self.assertIn("Do not block a routine recommendation on annual reports", self.skill)
+
+    def test_codex_is_the_only_user_interface(self) -> None:
+        self.assertIn("Codex is the only user interface", self.skill)
+        self.assertIn("Never ask the user to run CLI commands", self.skill)
 
     def test_skill_keeps_token_out_of_chat(self) -> None:
         self.assertIn("Never request the token value", self.skill)
