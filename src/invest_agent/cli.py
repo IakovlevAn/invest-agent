@@ -25,6 +25,13 @@ from invest_agent.credit import (
     render_credit_report_json,
     render_credit_report_text,
 )
+from invest_agent.disclosure.interfax import EDisclosureClient
+from invest_agent.disclosures import (
+    DisclosurePolicy,
+    DisclosurePortfolioAnalyzer,
+    render_disclosure_report_json,
+    render_disclosure_report_text,
+)
 from invest_agent.domain import Side
 from invest_agent.executor import (
     ExactPackageExecutor,
@@ -51,14 +58,14 @@ from invest_agent.portfolio import (
     render_portfolio_json,
     render_portfolio_text,
 )
-from invest_agent.ratings.cbr import CbrRatingsClient
-from invest_agent.reader import PortfolioReader
 from invest_agent.rates import (
     BondRateModel,
     CbrKeyRateClient,
     CbrKeyRateError,
     RateScenarioPolicy,
 )
+from invest_agent.ratings.cbr import CbrRatingsClient
+from invest_agent.reader import PortfolioReader
 from invest_agent.secrets import (
     PrivateFileRefreshTokenStore,
     SecretStoreError,
@@ -106,6 +113,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build RAS and bond payment-schedule passports from FNS and MOEX",
     )
     _add_read_options(fundamentals)
+
+    disclosures = commands.add_parser(
+        "disclosures",
+        help="Index consolidated and exact-issue issuer-filed disclosures",
+    )
+    _add_read_options(disclosures)
 
     recommend = commands.add_parser(
         "recommend",
@@ -264,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
             "bonds",
             "credit",
             "fundamentals",
+            "disclosures",
             "recommend",
             "proposal",
         }:
@@ -313,6 +327,19 @@ def main(argv: list[str] | None = None) -> int:
                 render_fundamental_report_json
                 if args.format == "json"
                 else render_fundamental_report_text
+            )
+            print(renderer(report))
+            return 0
+        if args.command == "disclosures":
+            bonds = BondPortfolioEnricher(MoexIssClient()).enrich(snapshot)
+            report = DisclosurePortfolioAnalyzer(
+                EDisclosureClient(),
+                DisclosurePolicy.from_toml(POLICY_FILE),
+            ).analyze(bonds)
+            renderer = (
+                render_disclosure_report_json
+                if args.format == "json"
+                else render_disclosure_report_text
             )
             print(renderer(report))
             return 0

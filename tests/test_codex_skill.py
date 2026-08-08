@@ -16,6 +16,7 @@ class CodexSkillContractTests(unittest.TestCase):
         self.assertIn("uv run invest-agent recommend --format json", self.skill)
         self.assertIn("Do not reconstruct holdings from conversation memory", self.skill)
         self.assertIn("Do not block a routine recommendation on annual reports", self.skill)
+        self.assertIn("uv run invest-agent disclosures --format json", self.skill)
 
     def test_codex_is_the_only_user_interface(self) -> None:
         self.assertIn("Codex is the only user interface", self.skill)
