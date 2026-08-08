@@ -32,6 +32,7 @@ from invest_agent.market.moex import (
 )
 from invest_agent.policy import InvestmentPolicy
 from invest_agent.ratings.cbr import CbrRatingAction
+from invest_agent.universe import BondUniverseCandidate, BondUniverseReport
 
 NOW = datetime(2026, 8, 8, 16, 0, tzinfo=UTC)
 POLICY_PATH = Path(__file__).parents[1] / "config" / "investment_policy.toml"
@@ -43,6 +44,7 @@ def manager_policy() -> ManagerPolicy:
         speculative_reduce_fraction=Decimal("0.50"),
         minimum_allocation_rub=Decimal("5000"),
         allocation_rounding_rub=Decimal("100"),
+        maximum_single_purchase_share_of_cash=Decimal("0.40"),
     )
 
 
@@ -360,6 +362,33 @@ class PortfolioManagerTests(unittest.TestCase):
         self.assertEqual(decisions["RU000A000001"].action, ManagerAction.ADD_CANDIDATE)
         self.assertEqual(decisions["RU000A000001"].recommended_add_rub, Decimal("0"))
 
+    def test_credit_reduction_must_precede_new_purchase(self) -> None:
+        candidate = bond("RU000A000001", emitter_id=1, value="1000", yield_percent="30")
+        speculative = bond("RU000A000002", emitter_id=2, value="99000", yield_percent="28")
+        audit, bonds, credit = inputs(
+            (candidate, speculative),
+            (
+                rating("RU000A000001", emitter_id=1, band=RatingBand.ADEQUATE),
+                rating(
+                    "RU000A000002",
+                    emitter_id=2,
+                    band=RatingBand.SPECULATIVE,
+                    signal=CreditSignal(
+                        "SPECULATIVE_RATING",
+                        SignalSeverity.WARNING,
+                        "рейтинг BB или ниже",
+                    ),
+                ),
+            ),
+        )
+
+        report = self.manager().recommend(audit, bonds, credit)
+        scenario = next(item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH")
+
+        self.assertGreater(scenario.invested_cash_rub, Decimal("0"))
+        self.assertFalse(scenario.recommended)
+        self.assertEqual(report.primary_action, "REDUCE_CREDIT_RISK_BEFORE_NEW_RISK")
+
     def test_warning_freezes_addition_and_output_never_creates_orders(self) -> None:
         record = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")
         warning = CreditSignal(
@@ -380,6 +409,60 @@ class PortfolioManagerTests(unittest.TestCase):
         self.assertFalse(payload["trade_gate"]["orders_created"])
         self.assertTrue(payload["trade_gate"]["explicit_confirmation_required"])
         self.assertEqual(len(payload["scenarios"]), 3)
+
+    def test_allocates_cash_to_ranked_new_issuers_without_creating_orders(self) -> None:
+        current = bond("RU000A000001", emitter_id=1, value="100000", yield_percent="18")
+        audit, bonds, credit = inputs(
+            (current,),
+            (rating("RU000A000001", emitter_id=1, band=RatingBand.HIGHEST),),
+        )
+        candidates = tuple(
+            BondUniverseCandidate(
+                ticker=f"RU000A00000{index}",
+                isin=f"RU000A00000{index}",
+                name=f"Новый выпуск {index}",
+                emitter_id=index,
+                emitter_name=f"Новый эмитент {index}",
+                current_issuer_share_of_bonds=Decimal("0"),
+                broad_rating_band=RatingBand.STRONG,
+                effective_yield_percent=Decimal(yield_percent),
+                duration_days=Decimal("500"),
+                lot_size=1,
+                estimated_lot_cost_rub=Decimal("1010"),
+                reference_buy_price_percent=Decimal("100"),
+                turnover_today_rub=Decimal("1000000"),
+                ranking_score=Decimal(score),
+                reasons=("чистый кредитный профиль",),
+                moex_security_url="https://iss.moex.test/security",
+                moex_market_url="https://iss.moex.test/market",
+            )
+            for index, yield_percent, score in ((2, "24", "22"), (3, "23", "21"))
+        )
+        universe = BondUniverseReport(
+            account_ref=audit.account_ref,
+            portfolio_as_of=NOW,
+            fetched_at=NOW,
+            board_id="TQCB",
+            scanned_count=1000,
+            coarse_eligible_count=20,
+            detailed_count=8,
+            candidates=candidates,
+            rejection_counts=(),
+            failures=(),
+        )
+
+        report = self.manager().recommend(audit, bonds, credit, universe)
+        payload = json.loads(render_manager_report_json(report))
+
+        self.assertEqual(
+            [item.recommended_add_rub for item in report.new_bond_candidates],
+            [Decimal("17600"), Decimal("17600")],
+        )
+        scenario = next(item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH")
+        self.assertTrue(scenario.recommended)
+        self.assertEqual(scenario.invested_cash_rub, Decimal("35200"))
+        self.assertFalse(payload["trade_gate"]["orders_created"])
+        self.assertFalse(payload["new_bond_candidates"][0]["bcs_availability_verified"])
 
     def test_rejects_cross_account_inputs(self) -> None:
         record = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")

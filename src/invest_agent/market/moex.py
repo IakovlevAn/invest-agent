@@ -63,6 +63,22 @@ YIELD_COLUMNS = (
     "TRADEMOMENT",
     "SYSTIME",
 )
+UNIVERSE_SECURITY_COLUMNS = (
+    "SECID",
+    "BOARDID",
+    "SHORTNAME",
+    "ISIN",
+    "LOTSIZE",
+    "FACEVALUE",
+    "FACEUNIT",
+    "STATUS",
+    "LISTLEVEL",
+    "MATDATE",
+    "ISSUESIZE",
+    "ACCRUEDINT",
+    "PREVPRICE",
+    "YIELDATPREVWAPRICE",
+)
 
 
 class MoexApiError(RuntimeError):
@@ -155,6 +171,57 @@ class MoexBondSnapshot:
     facts: MoexBondFacts
     market: MoexBondMarketData | None
     fetched_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MoexBondUniverseQuote:
+    secid: str
+    board_id: str
+    short_name: str
+    isin: str
+    lot_size: int
+    face_value: Decimal
+    face_currency: str
+    status: str
+    list_level: int | None
+    maturity_date: date | None
+    issue_size: Decimal | None
+    accrued_interest_rub: Decimal
+    previous_price_percent: Decimal | None
+    effective_yield_percent: Decimal | None
+    duration_days: Decimal | None
+    bid_percent: Decimal | None
+    offer_percent: Decimal | None
+    last_percent: Decimal | None
+    wap_percent: Decimal | None
+    trades_today: int | None
+    turnover_today_rub: Decimal | None
+    trading_status: str | None
+    trade_moment: datetime | None
+    source_url: str
+
+    @property
+    def reference_buy_price_percent(self) -> Decimal | None:
+        return _first_decimal(
+            self.offer_percent,
+            self.last_percent,
+            self.wap_percent,
+            self.previous_price_percent,
+        )
+
+    @property
+    def estimated_lot_cost_rub(self) -> Decimal | None:
+        price = self.reference_buy_price_percent
+        if price is None:
+            return None
+        clean = self.face_value * price / Decimal("100")
+        return (clean + self.accrued_interest_rub) * self.lot_size
+
+    @property
+    def issue_notional_rub(self) -> Decimal | None:
+        if self.issue_size is None:
+            return None
+        return self.face_value * self.issue_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +333,32 @@ class MoexIssClient:
             ogrn=_optional_text(row.get("OGRN")),
             website=_optional_text(row.get("URL")),
             source_url=url,
+        )
+
+    def fetch_bond_universe(
+        self,
+        board_id: str = "TQCB",
+    ) -> tuple[MoexBondUniverseQuote, ...]:
+        normalized_board = board_id.strip().upper()
+        if not normalized_board:
+            raise ValueError("board_id is required")
+        url = self._universe_url(normalized_board)
+        payload = self._get_json(url, operation=f"universe:{normalized_board}")
+        securities = _unique_rows_by_secid(_table(payload, "securities"), "securities")
+        market = _unique_rows_by_secid(_table(payload, "marketdata"), "marketdata")
+        yields = _unique_rows_by_secid(
+            _table(payload, "marketdata_yields"),
+            "marketdata_yields",
+        )
+        return tuple(
+            _universe_quote(
+                row,
+                market.get(secid),
+                yields.get(secid),
+                board=normalized_board,
+                source_url=url,
+            )
+            for secid, row in securities.items()
         )
 
     def fetch_bond_schedule(self, secid: str) -> MoexBondSchedule:
@@ -389,6 +482,22 @@ class MoexIssClient:
             f"{ISS_BASE_URL}/engines/stock/markets/bonds/boards/"
             f"{urllib.parse.quote(board, safe='')}/securities/"
             f"{urllib.parse.quote(secid, safe='')}.json?{query}"
+        )
+
+    @staticmethod
+    def _universe_url(board: str) -> str:
+        query = urllib.parse.urlencode(
+            {
+                "iss.meta": "off",
+                "iss.only": "securities,marketdata,marketdata_yields",
+                "securities.columns": ",".join(UNIVERSE_SECURITY_COLUMNS),
+                "marketdata.columns": ",".join(MARKETDATA_COLUMNS),
+                "marketdata_yields.columns": ",".join(YIELD_COLUMNS),
+            }
+        )
+        return (
+            f"{ISS_BASE_URL}/engines/stock/markets/bonds/boards/"
+            f"{urllib.parse.quote(board, safe='')}/securities.json?{query}"
         )
 
     @staticmethod
@@ -518,6 +627,92 @@ def _market_data(
         trading_status=_optional_text(market.get("TRADINGSTATUS")),
         trade_moment=_datetime(yields.get("TRADEMOMENT")),
         system_moment=_first_datetime(yields.get("SYSTIME"), market.get("SYSTIME")),
+        source_url=source_url,
+    )
+
+
+def _unique_rows_by_secid(
+    rows: list[dict[str, Any]],
+    table: str,
+) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        secid = _required_text(row.get("SECID"), f"{table}.SECID").upper()
+        if secid in result:
+            raise MoexContractError(f"MOEX {table} contains duplicate SECID {secid}")
+        result[secid] = row
+    return result
+
+
+def _universe_quote(
+    security: Mapping[str, Any],
+    market: Mapping[str, Any] | None,
+    yields: Mapping[str, Any] | None,
+    *,
+    board: str,
+    source_url: str,
+) -> MoexBondUniverseQuote:
+    market = {} if market is None else market
+    yields = {} if yields is None else yields
+    secid = _required_text(security.get("SECID"), "securities.SECID").upper()
+    returned_boards = {
+        value
+        for value in (
+            security.get("BOARDID"),
+            market.get("BOARDID"),
+            yields.get("BOARDID"),
+        )
+        if value is not None
+    }
+    if returned_boards != {board}:
+        raise MoexContractError(f"MOEX universe board mismatch for {secid}")
+    for table, row in (("marketdata", market), ("marketdata_yields", yields)):
+        returned_secid = row.get("SECID")
+        if returned_secid is not None and returned_secid != secid:
+            raise MoexContractError(f"MOEX {table} SECID mismatch for {secid}")
+    lot_size = _integer(security.get("LOTSIZE"))
+    face_value = _decimal(security.get("FACEVALUE"))
+    if lot_size is None or lot_size <= 0:
+        raise MoexContractError(f"MOEX universe {secid} has invalid lot size")
+    if face_value is None or face_value <= 0:
+        raise MoexContractError(f"MOEX universe {secid} has invalid face value")
+    return MoexBondUniverseQuote(
+        secid=secid,
+        board_id=board,
+        short_name=_required_text(security.get("SHORTNAME"), "securities.SHORTNAME"),
+        isin=_required_text(security.get("ISIN"), "securities.ISIN").upper(),
+        lot_size=lot_size,
+        face_value=face_value,
+        face_currency=_required_text(
+            security.get("FACEUNIT"),
+            "securities.FACEUNIT",
+        ).upper(),
+        status=_required_text(security.get("STATUS"), "securities.STATUS").upper(),
+        list_level=_integer(security.get("LISTLEVEL")),
+        maturity_date=_date(security.get("MATDATE")),
+        issue_size=_decimal(security.get("ISSUESIZE")),
+        accrued_interest_rub=_decimal(security.get("ACCRUEDINT")) or Decimal("0"),
+        previous_price_percent=_decimal(security.get("PREVPRICE")),
+        effective_yield_percent=_first_decimal(
+            yields.get("EFFECTIVEYIELDWAPRICE"),
+            yields.get("EFFECTIVEYIELD"),
+            market.get("YIELDATWAPRICE"),
+            market.get("YIELD"),
+            security.get("YIELDATPREVWAPRICE"),
+        ),
+        duration_days=_first_decimal(
+            yields.get("DURATIONWAPRICE"),
+            yields.get("DURATION"),
+            market.get("DURATION"),
+        ),
+        bid_percent=_decimal(market.get("BID")),
+        offer_percent=_decimal(market.get("OFFER")),
+        last_percent=_decimal(market.get("LAST")),
+        wap_percent=_first_decimal(yields.get("WAPRICE"), market.get("WAPRICE")),
+        trades_today=_integer(market.get("NUMTRADES")),
+        turnover_today_rub=_decimal(market.get("VALTODAY_RUR")),
+        trading_status=_optional_text(market.get("TRADINGSTATUS")),
+        trade_moment=_datetime(yields.get("TRADEMOMENT")),
         source_url=source_url,
     )
 

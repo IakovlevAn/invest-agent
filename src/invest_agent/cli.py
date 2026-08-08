@@ -46,6 +46,7 @@ from invest_agent.secrets import (
     PrivateFileRefreshTokenStore,
     SecretStoreError,
 )
+from invest_agent.universe import BondCandidateScreener, BondUniversePolicy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_ENV_FILE = PROJECT_ROOT / ".env"
@@ -156,15 +157,24 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "recommend":
             investment_policy = InvestmentPolicy.from_toml(POLICY_FILE)
             audit = PortfolioAuditor(investment_policy).audit(snapshot)
-            bonds = BondPortfolioEnricher(MoexIssClient()).enrich(snapshot)
+            moex = MoexIssClient()
+            ratings = CbrRatingsClient()
+            credit_policy = CreditAnalysisPolicy.from_toml(POLICY_FILE)
+            bonds = BondPortfolioEnricher(moex).enrich(snapshot)
             credit = CreditPortfolioAnalyzer(
-                CbrRatingsClient(),
-                CreditAnalysisPolicy.from_toml(POLICY_FILE),
+                ratings,
+                credit_policy,
             ).analyze(bonds)
+            universe = BondCandidateScreener(
+                moex,
+                ratings,
+                credit_policy,
+                BondUniversePolicy.from_toml(POLICY_FILE),
+            ).screen(snapshot, bonds)
             report = PortfolioManager(
                 investment_policy,
                 ManagerPolicy.from_toml(POLICY_FILE),
-            ).recommend(audit, bonds, credit)
+            ).recommend(audit, bonds, credit, universe)
             renderer = (
                 render_manager_report_json
                 if args.format == "json"

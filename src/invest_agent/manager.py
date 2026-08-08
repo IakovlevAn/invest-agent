@@ -26,6 +26,7 @@ from invest_agent.credit import (
     SignalSeverity,
 )
 from invest_agent.policy import InvestmentPolicy
+from invest_agent.universe import BondUniverseReport
 
 
 class ManagerAction(StrEnum):
@@ -42,6 +43,7 @@ class ManagerPolicy:
     speculative_reduce_fraction: Decimal
     minimum_allocation_rub: Decimal
     allocation_rounding_rub: Decimal
+    maximum_single_purchase_share_of_cash: Decimal
 
     @classmethod
     def from_toml(cls, path: str | Path) -> ManagerPolicy:
@@ -64,6 +66,10 @@ class ManagerPolicy:
                 raw["allocation_rounding_rub"],
                 "manager.allocation_rounding_rub",
             ),
+            maximum_single_purchase_share_of_cash=_fraction(
+                raw["maximum_single_purchase_share_of_cash"],
+                "manager.maximum_single_purchase_share_of_cash",
+            ),
         )
         return policy
 
@@ -72,6 +78,7 @@ class ManagerPolicy:
 class BondManagerDecision:
     ticker: str
     isin: str
+    emitter_id: int
     emitter_name: str
     market_value_rub: Decimal
     issuer_share_of_bonds: Decimal
@@ -83,6 +90,28 @@ class BondManagerDecision:
     recommended_reduce_rub: Decimal
     reasons: tuple[str, ...]
     exit_triggers: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NewBondManagerDecision:
+    ticker: str
+    isin: str
+    name: str
+    emitter_id: int
+    emitter_name: str
+    current_issuer_share_of_bonds: Decimal
+    broad_rating_band: RatingBand
+    comparable_yield_percent: Decimal
+    duration_days: Decimal
+    estimated_lot_cost_rub: Decimal
+    reference_buy_price_percent: Decimal
+    turnover_today_rub: Decimal
+    ranking_score: Decimal
+    recommended_add_rub: Decimal
+    reasons: tuple[str, ...]
+    bcs_availability_verified: bool
+    moex_security_url: str
+    moex_market_url: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,11 +143,16 @@ class PortfolioManagerReport:
     stressed_credit_share_of_bonds: Decimal
     primary_action: str
     decisions: tuple[BondManagerDecision, ...]
+    new_bond_candidates: tuple[NewBondManagerDecision, ...]
     scenarios: tuple[ManagerScenario, ...]
     data_failures: tuple[str, ...]
     bcs_as_of: str
     moex_fetched_at: datetime
     ratings_fetched_at: datetime
+    universe_scanned_count: int
+    universe_coarse_eligible_count: int
+    universe_detailed_count: int
+    universe_rejection_counts: tuple[tuple[str, int], ...]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -154,6 +188,17 @@ class PortfolioManagerReport:
             },
             "primary_action": self.primary_action,
             "decisions": [_decision_as_dict(decision) for decision in self.decisions],
+            "new_bond_candidates": [
+                _new_candidate_as_dict(candidate)
+                for candidate in self.new_bond_candidates
+            ],
+            "universe": {
+                "scanned_count": self.universe_scanned_count,
+                "coarse_eligible_count": self.universe_coarse_eligible_count,
+                "detailed_count": self.universe_detailed_count,
+                "selected_count": len(self.new_bond_candidates),
+                "rejection_counts": dict(self.universe_rejection_counts),
+            },
             "scenarios": [_scenario_as_dict(scenario) for scenario in self.scenarios],
             "data_failures": list(self.data_failures),
             "model_boundaries": [
@@ -161,6 +206,7 @@ class PortfolioManagerReport:
                 "floaters without a rate scenario have no comparable expected yield",
                 "rating bands are diagnostic classes, not default probabilities",
                 "amounts are allocation targets, not executable orders or lot calculations",
+                "new candidates require BCS availability and exact lot-price verification",
                 "stocks remain unchanged until a separate superior-alternative case is proven",
             ],
             "trade_gate": {
@@ -189,8 +235,9 @@ class PortfolioManager:
         audit: PortfolioAudit,
         bonds: BondMarketReport,
         credit: CreditPortfolioReport,
+        universe: BondUniverseReport | None = None,
     ) -> PortfolioManagerReport:
-        _validate_inputs(audit, bonds, credit)
+        _validate_inputs(audit, bonds, credit, universe)
         credit_by_ticker = {passport.ticker: passport for passport in credit.passports}
         issuer_shares = {
             exposure.emitter_id: exposure.share_of_covered_bonds
@@ -204,7 +251,13 @@ class PortfolioManager:
             )
             for record in bonds.positions
         ]
-        decisions = self._allocate_cash(decisions, bonds, audit.cash_rub)
+        new_candidates = _new_candidate_decisions(universe)
+        decisions, new_candidates = self._allocate_cash(
+            decisions,
+            new_candidates,
+            bonds,
+            audit.cash_rub,
+        )
         current_yield, yield_coverage = _comparable_yield(bonds.positions)
         stressed_value = sum(
             (
@@ -219,6 +272,7 @@ class PortfolioManager:
             audit,
             bonds,
             decisions,
+            new_candidates,
             current_yield=current_yield,
         )
         primary_action = _primary_action(decisions)
@@ -252,11 +306,32 @@ class PortfolioManager:
             stressed_credit_share_of_bonds=stressed_share,
             primary_action=primary_action,
             decisions=tuple(sorted(decisions, key=_decision_sort_key)),
+            new_bond_candidates=tuple(
+                sorted(
+                    new_candidates,
+                    key=lambda item: (-item.ranking_score, item.ticker),
+                )
+            ),
             scenarios=scenarios,
-            data_failures=failures,
+            data_failures=tuple(
+                sorted(
+                    {
+                        *failures,
+                        *(() if universe is None else universe.failures),
+                    }
+                )
+            ),
             bcs_as_of=audit.as_of,
             moex_fetched_at=bonds.fetched_at,
             ratings_fetched_at=credit.fetched_at,
+            universe_scanned_count=0 if universe is None else universe.scanned_count,
+            universe_coarse_eligible_count=(
+                0 if universe is None else universe.coarse_eligible_count
+            ),
+            universe_detailed_count=0 if universe is None else universe.detailed_count,
+            universe_rejection_counts=(
+                () if universe is None else universe.rejection_counts
+            ),
         )
 
     def _decision(
@@ -325,6 +400,7 @@ class PortfolioManager:
         return BondManagerDecision(
             ticker=record.position.ticker,
             isin=record.moex.facts.isin,
+            emitter_id=record.moex.facts.emitter_id,
             emitter_name=(
                 record.moex.facts.name
                 if record.emitter is None
@@ -345,64 +421,101 @@ class PortfolioManager:
     def _allocate_cash(
         self,
         decisions: list[BondManagerDecision],
+        new_candidates: list[NewBondManagerDecision],
         bonds: BondMarketReport,
         cash_rub: Decimal,
-    ) -> list[BondManagerDecision]:
+    ) -> tuple[list[BondManagerDecision], list[NewBondManagerDecision]]:
         remaining = cash_rub
-        updated = list(decisions)
-        candidates = sorted(
-            (
-                decision
-                for decision in decisions
-                if decision.action is ManagerAction.ADD_CANDIDATE
-                and decision.comparable_yield_percent is not None
-            ),
-            key=lambda decision: (
-                -_risk_adjusted_yield(decision),
-                decision.issuer_share_of_bonds,
-                decision.ticker,
-            ),
+        updated_existing = list(decisions)
+        updated_new = list(new_candidates)
+        candidates: list[
+            tuple[Decimal, str, BondManagerDecision | NewBondManagerDecision]
+        ] = [
+            (_risk_adjusted_yield(decision), "EXISTING", decision)
+            for decision in decisions
+            if decision.action is ManagerAction.ADD_CANDIDATE
+            and decision.comparable_yield_percent is not None
+        ]
+        candidates.extend(
+            (candidate.ranking_score, "NEW", candidate)
+            for candidate in new_candidates
         )
-        for candidate in candidates:
+        candidates.sort(
+            key=lambda item: (
+                -item[0],
+                item[2].current_issuer_share_of_bonds
+                if isinstance(item[2], NewBondManagerDecision)
+                else item[2].issuer_share_of_bonds,
+                item[2].ticker,
+            )
+        )
+        issuer_values = {
+            exposure.emitter_id: exposure.value_rub
+            for exposure in bonds.issuer_exposures
+        }
+        maximum_purchase = _round_down(
+            cash_rub * self._manager_policy.maximum_single_purchase_share_of_cash,
+            self._manager_policy.allocation_rounding_rub,
+        )
+        for _, candidate_type, candidate in candidates:
+            current_issuer_value = issuer_values.get(candidate.emitter_id, Decimal("0"))
             capacity = _issuer_add_capacity(
-                current_value=(
-                    candidate.issuer_share_of_bonds * bonds.bond_value_rub
-                ),
+                current_value=current_issuer_value,
                 sleeve_value=bonds.bond_value_rub,
                 maximum_share=self._manager_policy.max_bond_issuer_share_after_add,
             )
             amount = _round_down(
-                min(remaining, capacity),
+                min(remaining, capacity, maximum_purchase),
                 self._manager_policy.allocation_rounding_rub,
             )
             if amount < self._manager_policy.minimum_allocation_rub:
                 continue
-            index = updated.index(candidate)
-            updated[index] = replace(candidate, recommended_add_rub=amount)
+            if candidate_type == "EXISTING":
+                existing = candidate
+                assert isinstance(existing, BondManagerDecision)
+                index = updated_existing.index(existing)
+                updated_existing[index] = replace(existing, recommended_add_rub=amount)
+            else:
+                new = candidate
+                assert isinstance(new, NewBondManagerDecision)
+                index = updated_new.index(new)
+                updated_new[index] = replace(new, recommended_add_rub=amount)
+            issuer_values[candidate.emitter_id] = current_issuer_value + amount
             remaining -= amount
             if remaining < self._manager_policy.minimum_allocation_rub:
                 break
-        return updated
+        return updated_existing, updated_new
 
     def _scenarios(
         self,
         audit: PortfolioAudit,
         bonds: BondMarketReport,
         decisions: list[BondManagerDecision],
+        new_candidates: list[NewBondManagerDecision],
         *,
         current_yield: Decimal | None,
     ) -> tuple[ManagerScenario, ...]:
         invested = sum(
             (decision.recommended_add_rub for decision in decisions),
             Decimal("0"),
+        ) + sum(
+            (candidate.recommended_add_rub for candidate in new_candidates),
+            Decimal("0"),
         )
-        invested_yield = _yield_after_allocations(bonds.positions, decisions)
+        invested_yield = _yield_after_allocations(
+            bonds.positions,
+            decisions,
+            new_candidates,
+        )
         projected_share = _share(
             bonds.bond_value_rub + invested,
             audit.managed_value_rub,
         )
         stock_sales = max(Decimal("0"), audit.bond_target_gap_rub - audit.cash_rub)
-        critical = any(decision.action is ManagerAction.URGENT_REVIEW for decision in decisions)
+        risk_reduction_first = any(
+            decision.action in {ManagerAction.URGENT_REVIEW, ManagerAction.REDUCE_RISK}
+            for decision in decisions
+        )
         return (
             ManagerScenario(
                 code="NO_ACTION",
@@ -416,15 +529,20 @@ class PortfolioManager:
             ),
             ManagerScenario(
                 code="INVEST_CURRENT_CASH",
-                recommended=invested > 0 and not critical,
+                recommended=invested > 0 and not risk_reduction_first,
                 invested_cash_rub=invested,
                 remaining_cash_rub=audit.cash_rub - invested,
                 projected_bond_share_managed=projected_share,
                 comparable_bond_yield_percent=invested_yield,
                 required_stock_sales_rub=Decimal("0"),
                 explanation=(
-                    "распределяет деньги только в текущие выпуски без критических или "
-                    "предупреждающих кредитных сигналов и не превышает лимит эмитента"
+                    "кандидатное распределение рассчитано, но новый риск разрешён только "
+                    "после выполнения приоритетного сокращения/проверки"
+                    if risk_reduction_first
+                    else (
+                        "распределяет деньги только в выпуски без критических или "
+                        "предупреждающих кредитных сигналов и не превышает лимит эмитента"
+                    )
                 ),
             ),
             ManagerScenario(
@@ -476,6 +594,20 @@ def render_manager_report_text(report: PortfolioManagerReport) -> str:
                 f"  сократить ориентировочно {decision.recommended_reduce_rub:,.0f} ₽"
             )
         lines.append(f"  основание: {'; '.join(decision.reasons)}")
+    lines.extend(["", "Новые выпуски рынка:"])
+    if not report.new_bond_candidates:
+        lines.append("- кандидатов, прошедших все фильтры, нет")
+    for candidate in report.new_bond_candidates:
+        lines.append(
+            f"- {candidate.ticker} · {candidate.emitter_name} · доходность "
+            f"{candidate.comparable_yield_percent:.2f}% · рейтинг "
+            f"{candidate.broad_rating_band.value}"
+        )
+        if candidate.recommended_add_rub > 0:
+            lines.append(
+                f"  ориентир распределения {candidate.recommended_add_rub:,.0f} ₽; "
+                "доступность и лоты в БКС ещё не подтверждены"
+            )
     lines.extend(["", "Сценарии:"])
     for scenario in report.scenarios:
         marker = "РЕКОМЕНДОВАН" if scenario.recommended else "АЛЬТЕРНАТИВА"
@@ -499,6 +631,7 @@ def _validate_inputs(
     audit: PortfolioAudit,
     bonds: BondMarketReport,
     credit: CreditPortfolioReport,
+    universe: BondUniverseReport | None,
 ) -> None:
     if len({audit.account_ref, bonds.account_ref, credit.account_ref}) != 1:
         raise ValueError("manager input account mismatch")
@@ -508,6 +641,8 @@ def _validate_inputs(
     credit_tickers = {passport.ticker for passport in credit.passports}
     if not credit_tickers.issubset(bond_tickers):
         raise ValueError("manager credit passport is outside the bond report")
+    if universe is not None and universe.account_ref != audit.account_ref:
+        raise ValueError("manager universe account mismatch")
 
 
 def _worst_band(ratings: tuple[Any, ...]) -> RatingBand | None:
@@ -527,6 +662,38 @@ def _band_rank(band: RatingBand) -> int:
         RatingBand.DEFAULT: 7,
         RatingBand.UNRATED: 8,
     }[band]
+
+
+def _new_candidate_decisions(
+    universe: BondUniverseReport | None,
+) -> list[NewBondManagerDecision]:
+    if universe is None:
+        return []
+    return [
+        NewBondManagerDecision(
+            ticker=candidate.ticker,
+            isin=candidate.isin,
+            name=candidate.name,
+            emitter_id=candidate.emitter_id,
+            emitter_name=candidate.emitter_name,
+            current_issuer_share_of_bonds=(
+                candidate.current_issuer_share_of_bonds
+            ),
+            broad_rating_band=candidate.broad_rating_band,
+            comparable_yield_percent=candidate.effective_yield_percent,
+            duration_days=candidate.duration_days,
+            estimated_lot_cost_rub=candidate.estimated_lot_cost_rub,
+            reference_buy_price_percent=candidate.reference_buy_price_percent,
+            turnover_today_rub=candidate.turnover_today_rub,
+            ranking_score=candidate.ranking_score,
+            recommended_add_rub=Decimal("0"),
+            reasons=candidate.reasons,
+            bcs_availability_verified=False,
+            moex_security_url=candidate.moex_security_url,
+            moex_market_url=candidate.moex_market_url,
+        )
+        for candidate in universe.candidates
+    ]
 
 
 def _risk_adjusted_yield(decision: BondManagerDecision) -> Decimal:
@@ -576,6 +743,7 @@ def _comparable_yield(
 def _yield_after_allocations(
     records: tuple[EnrichedBondPosition, ...],
     decisions: list[BondManagerDecision],
+    new_candidates: list[NewBondManagerDecision],
 ) -> Decimal | None:
     current, _ = _comparable_yield(records)
     covered_value = sum(
@@ -593,6 +761,11 @@ def _yield_after_allocations(
             continue
         numerator += decision.recommended_add_rub * decision.comparable_yield_percent
         allocated += decision.recommended_add_rub
+    for candidate in new_candidates:
+        if candidate.recommended_add_rub <= 0:
+            continue
+        numerator += candidate.recommended_add_rub * candidate.comparable_yield_percent
+        allocated += candidate.recommended_add_rub
     denominator = covered_value + allocated
     return None if denominator == 0 else numerator / denominator
 
@@ -622,6 +795,7 @@ def _decision_as_dict(decision: BondManagerDecision) -> dict[str, Any]:
     return {
         "ticker": decision.ticker,
         "isin": decision.isin,
+        "emitter_id": decision.emitter_id,
         "emitter_name": decision.emitter_name,
         "market_value_rub": _decimal_text(decision.market_value_rub),
         "issuer_share_of_bonds": _decimal_text(decision.issuer_share_of_bonds),
@@ -637,6 +811,37 @@ def _decision_as_dict(decision: BondManagerDecision) -> dict[str, Any]:
         "recommended_reduce_rub": _decimal_text(decision.recommended_reduce_rub),
         "reasons": list(decision.reasons),
         "exit_triggers": list(decision.exit_triggers),
+    }
+
+
+def _new_candidate_as_dict(candidate: NewBondManagerDecision) -> dict[str, Any]:
+    return {
+        "ticker": candidate.ticker,
+        "isin": candidate.isin,
+        "name": candidate.name,
+        "emitter_id": candidate.emitter_id,
+        "emitter_name": candidate.emitter_name,
+        "current_issuer_share_of_bonds": _decimal_text(
+            candidate.current_issuer_share_of_bonds
+        ),
+        "broad_rating_band": candidate.broad_rating_band.value,
+        "comparable_yield_percent": _decimal_text(
+            candidate.comparable_yield_percent
+        ),
+        "duration_days": _decimal_text(candidate.duration_days),
+        "estimated_lot_cost_rub": _decimal_text(candidate.estimated_lot_cost_rub),
+        "reference_buy_price_percent": _decimal_text(
+            candidate.reference_buy_price_percent
+        ),
+        "turnover_today_rub": _decimal_text(candidate.turnover_today_rub),
+        "ranking_score": _decimal_text(candidate.ranking_score),
+        "recommended_add_rub": _decimal_text(candidate.recommended_add_rub),
+        "reasons": list(candidate.reasons),
+        "bcs_availability_verified": candidate.bcs_availability_verified,
+        "sources": {
+            "security": candidate.moex_security_url,
+            "market": candidate.moex_market_url,
+        },
     }
 
 

@@ -462,19 +462,27 @@ def _passport(
     current = tuple(rating for rating in ratings if rating.status == "CURRENT")
     signals: list[CreditSignal] = []
     facts = record.moex.facts
-    if facts.has_default is True or facts.has_technical_default is True:
-        flags = []
-        if facts.has_default is True:
-            flags.append("default")
-        if facts.has_technical_default is True:
-            flags.append("technical default")
+    if facts.has_default is True:
         signals.append(
             CreditSignal(
                 code="MOEX_DEFAULT_FLAG",
                 severity=SignalSeverity.CRITICAL,
                 message=(
-                    f"в карточке MOEX установлен флаг {', '.join(flags)}; "
+                    "в карточке MOEX установлен флаг default; "
                     "нужно проверить дату и текущий статус в раскрытии эмитента"
+                ),
+            )
+        )
+    elif facts.has_technical_default is True:
+        signals.append(
+            CreditSignal(
+                code="MOEX_TECHNICAL_DEFAULT_HISTORY",
+                severity=SignalSeverity.WARNING,
+                message=(
+                    "в карточке MOEX отмечен технический дефолт эмитента; "
+                    "флаг может относиться к другому выпуску или закрытому событию, "
+                    "поэтому он запрещает докупку, но сам по себе не доказывает "
+                    "текущий дефолт этого выпуска"
                 ),
             )
         )

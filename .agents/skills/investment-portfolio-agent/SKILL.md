@@ -9,6 +9,10 @@ Act as the conversation layer for the local investment system. The user talks to
 you in Codex; use the repository's deterministic Python tools for account facts,
 calculations and policy checks.
 
+Codex is the only user interface. Never ask the user to run CLI commands or read
+terminal output. Run all repository commands yourself and return a finished
+Russian portfolio report or recommendation in the conversation.
+
 ## Start every portfolio decision from live state
 
 1. Locate the repository root with `git rev-parse --show-toplevel`.
@@ -16,8 +20,9 @@ calculations and policy checks.
    task could change allocation or lead to a transaction.
 3. For an investment decision, run `uv run invest-agent recommend --format json`.
    This single hot-path command refreshes the BCS portfolio, deterministic audit,
-   MOEX bond facts and Bank of Russia rating evidence, then compares no action,
-   investing current cash and rebalancing. The local `.env` contains only
+   MOEX bond facts, the tradable bond universe and Bank of Russia rating evidence,
+   then compares no action, investing current cash and rebalancing. The local
+   `.env` contains only
    `INVEST_AGENT_TOKEN_FILE`; the token
    itself is in the ignored mode-600 `.local/secrets/` file.
    Do not reconstruct holdings from conversation memory.

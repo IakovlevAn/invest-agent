@@ -54,6 +54,7 @@ def enriched_bond(
     value: str = "100000",
     emitter_id: int = 1,
     has_default: bool = False,
+    has_technical_default: bool = False,
 ) -> EnrichedBondPosition:
     position = Position(
         instrument_uid=f"BCS:TQCB:{ticker}",
@@ -91,7 +92,7 @@ def enriched_bond(
         bond_subtype="До погашения",
         qualified_only=False,
         has_default=has_default,
-        has_technical_default=False,
+        has_technical_default=has_technical_default,
         source_url=f"https://iss.moex.com/{ticker}",
     )
     emitter = MoexEmitter(
@@ -248,6 +249,16 @@ class CreditPortfolioTests(unittest.TestCase):
         self.assertEqual(signals["MOEX_DEFAULT_FLAG"], "CRITICAL")
         self.assertEqual(signals["SPECULATIVE_RATING"], "WARNING")
         self.assertEqual(signals["RATING_STALE"], "WARNING")
+
+    def test_technical_default_history_is_warning_not_exact_active_default(self) -> None:
+        report = self.analyze(
+            FakeRatingsClient(issuer=(action(),)),
+            enriched_bond(has_technical_default=True),
+        )
+        signals = {signal.code: signal.severity.value for signal in report.passports[0].signals}
+
+        self.assertEqual(signals["MOEX_TECHNICAL_DEFAULT_HISTORY"], "WARNING")
+        self.assertNotIn("MOEX_DEFAULT_FLAG", signals)
 
     def test_source_failure_is_not_misreported_as_no_rating(self) -> None:
         report = self.analyze(FakeRatingsClient(fail=True), enriched_bond())
