@@ -29,6 +29,11 @@ class CodexSkillContractTests(unittest.TestCase):
         self.assertIn("The current MVP cannot send broker orders", self.skill)
         self.assertIn("Never infer trade approval", self.project_rules)
 
+    def test_skill_requires_exact_one_time_codex_confirmation(self) -> None:
+        self.assertIn("ПОДТВЕРЖДАЮ ПАКЕТ <full digest>", self.skill)
+        self.assertIn("APPROVED_AWAITING_ISOLATED_EXECUTOR", self.skill)
+        self.assertIn("quote/order book are fresh", self.skill)
+
 
 if __name__ == "__main__":
     unittest.main()

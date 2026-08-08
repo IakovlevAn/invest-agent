@@ -8,7 +8,10 @@ from datetime import UTC, datetime, timedelta
 
 from invest_agent.brokers.bcs import (
     AUTH_URL,
+    INSTRUMENTS_BY_ISINS_URL,
+    ORDER_BOOK_URL,
     PORTFOLIO_URL,
+    QUOTES_URL,
     BcsAccessToken,
     BcsApiError,
     BcsReadClient,
@@ -137,7 +140,10 @@ class BcsReadClientTests(unittest.TestCase):
         call = transport.calls[0]
         self.assertEqual(call["method"], "GET")
         self.assertEqual(call["url"], PORTFOLIO_URL)
-        self.assertEqual(call["headers"]["Authorization"], "Bearer access-secret")  # type: ignore[index]
+        self.assertEqual(
+            call["headers"]["Authorization"],  # type: ignore[index]
+            "Bearer access-secret",
+        )
 
     def test_wraps_live_top_level_position_array(self) -> None:
         transport = FakeTransport([json_response(200, [{"ticker": "TEST"}])])
@@ -226,6 +232,99 @@ class BcsReadClientTests(unittest.TestCase):
         with self.assertRaisesRegex(BcsApiError, "HTTP 401"):
             client.fetch_raw_portfolio(token)
         self.assertEqual(transport.calls, [])
+
+    def test_resolves_exact_bcs_bond_contract_by_isin(self) -> None:
+        transport = FakeTransport(
+            [
+                json_response(
+                    200,
+                    [
+                        {
+                            "ticker": "RU000A10TEST",
+                            "isin": "RU000A10TEST",
+                            "displayName": "Тест 001Р-01",
+                            "instrumentType": "BONDS",
+                            "boards": [{"classCode": "TQCB", "exchange": "MOEX"}],
+                            "primaryBoard": "TQCB",
+                            "tradingCurrency": "RUB",
+                            "settlementCurrency": "RUB",
+                            "faceValue": 1000,
+                            "lotSize": 1,
+                            "minimumStep": 0.01,
+                            "accruedInt": 12.34,
+                            "scale": 2,
+                            "isBlocked": False,
+                            "isQualifiedOnly": False,
+                            "availableForUnqualified": True,
+                            "couponTypeName": "Постоянный",
+                        }
+                    ],
+                )
+            ]
+        )
+        client = BcsReadClient(transport=transport, now=lambda: NOW)
+        token = BcsAccessToken("access-secret", NOW + timedelta(hours=1))
+
+        instrument = client.fetch_instruments_by_isins(token, ("RU000A10TEST",))[0]
+
+        self.assertEqual(instrument.primary_board, "TQCB")
+        self.assertEqual(instrument.lot_size, 1)
+        self.assertEqual(str(instrument.minimum_step), "0.01")
+        self.assertTrue(instrument.is_ruble_bond)
+        call = transport.calls[0]
+        self.assertEqual(call["url"], INSTRUMENTS_BY_ISINS_URL)
+        self.assertEqual(json.loads(call["body"]), {"isins": ["RU000A10TEST"]})
+
+    def test_reads_quote_and_order_book_with_broker_status(self) -> None:
+        transport = FakeTransport(
+            [
+                json_response(
+                    200,
+                    {
+                        "records": [
+                            {
+                                "ticker": "RU000A10TEST",
+                                "classCode": "TQCB",
+                                "dateTime": "2026-08-08T12:00:00Z",
+                                "securityTradingStatus": 17,
+                                "currency": "RUB",
+                                "bid": 99.98,
+                                "offer": 100.02,
+                                "last": 100,
+                                "bidYield": 19.8,
+                                "offerYield": 19.6,
+                            }
+                        ]
+                    },
+                ),
+                json_response(
+                    200,
+                    {
+                        "dateTime": "2026-08-08T12:00:01Z",
+                        "ticker": "RU000A10TEST",
+                        "classCode": "TQCB",
+                        "bids": [{"price": 99.98, "quantity": 15}],
+                        "asks": [{"price": 100.02, "quantity": 20}],
+                    },
+                ),
+            ]
+        )
+        client = BcsReadClient(transport=transport, now=lambda: NOW)
+        token = BcsAccessToken("access-secret", NOW + timedelta(hours=1))
+
+        quote = client.fetch_quotes(token, (("RU000A10TEST", "TQCB"),))[0]
+        book = client.fetch_order_book(
+            token,
+            ticker="RU000A10TEST",
+            class_code="TQCB",
+            depth=5,
+        )
+
+        self.assertTrue(quote.trading_is_open)
+        self.assertEqual(str(book.best_bid), "99.98")
+        self.assertEqual(str(book.best_offer), "100.02")
+        self.assertEqual(transport.calls[0]["url"], QUOTES_URL)
+        self.assertTrue(str(transport.calls[1]["url"]).startswith(ORDER_BOOK_URL + "?"))
 
 
 if __name__ == "__main__":

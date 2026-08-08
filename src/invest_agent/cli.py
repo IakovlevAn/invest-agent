@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
+from invest_agent.approval import ApprovalViolation
 from invest_agent.audit import PortfolioAuditor, render_audit_json, render_audit_text
 from invest_agent.bond_report import (
     BondPortfolioEnricher,
     render_bond_report_json,
     render_bond_report_text,
 )
+from invest_agent.broker_checks import BcsTradeVerifier
 from invest_agent.brokers.bcs import BcsApiError, BcsReadClient
 from invest_agent.credit import (
     CreditAnalysisPolicy,
@@ -19,6 +22,7 @@ from invest_agent.credit import (
     render_credit_report_json,
     render_credit_report_text,
 )
+from invest_agent.domain import Side
 from invest_agent.financial.fns import GirboClient
 from invest_agent.fundamentals import (
     FundamentalPolicy,
@@ -29,11 +33,10 @@ from invest_agent.fundamentals import (
 from invest_agent.manager import (
     ManagerPolicy,
     PortfolioManager,
-    render_manager_report_json,
     render_manager_report_text,
 )
 from invest_agent.market.moex import MoexIssClient
-from invest_agent.policy import InvestmentPolicy
+from invest_agent.policy import InvestmentPolicy, PolicyViolation
 from invest_agent.portfolio import (
     BcsPortfolioNormalizer,
     PortfolioContractError,
@@ -42,9 +45,23 @@ from invest_agent.portfolio import (
 )
 from invest_agent.ratings.cbr import CbrRatingsClient
 from invest_agent.reader import PortfolioReader
+from invest_agent.rates import (
+    BondRateModel,
+    CbrKeyRateClient,
+    CbrKeyRateError,
+    RateScenarioPolicy,
+)
 from invest_agent.secrets import (
     PrivateFileRefreshTokenStore,
     SecretStoreError,
+)
+from invest_agent.trade_proposal import (
+    CodexConfirmationGate,
+    ExactTradeProposalBuilder,
+    LocalTradeGateStore,
+    TradeProposalError,
+    TradeProposalPolicy,
+    proposal_as_dict,
 )
 from invest_agent.universe import BondCandidateScreener, BondUniversePolicy
 
@@ -52,6 +69,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_ENV_FILE = PROJECT_ROOT / ".env"
 TOKEN_FILE_ENV_KEY = "INVEST_AGENT_TOKEN_FILE"
 POLICY_FILE = PROJECT_ROOT / "config" / "investment_policy.toml"
+TRADE_GATE_ROOT = PROJECT_ROOT / ".local" / "state" / "trade-gate"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,6 +102,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build an approval-gated portfolio-manager recommendation",
     )
     _add_read_options(recommend)
+
+    proposal = commands.add_parser(
+        "proposal",
+        help="Build and persist an exact BCS-verified limit-order package",
+    )
+    _add_read_options(proposal)
+    proposal.add_argument("--isin", help="Exact ISIN from the manager report")
+    proposal.add_argument("--side", choices=("BUY", "SELL"))
+    proposal.add_argument(
+        "--action",
+        action="append",
+        help="Repeatable exact action in SIDE:ISIN form; cannot be mixed with --isin/--side",
+    )
+
+    confirm = commands.add_parser(
+        "confirm",
+        help="Record an exact one-time Codex confirmation without sending an order",
+    )
+    confirm.add_argument("--digest", required=True, help="Full SHA-256 proposal digest")
+    confirm.add_argument("--confirmation-text", required=True)
+    confirm.add_argument("--format", choices=("text", "json"), default="text")
     return parser
 
 
@@ -99,6 +138,27 @@ def _add_read_options(command: argparse.ArgumentParser) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "confirm":
+            proposal_policy = TradeProposalPolicy.from_toml(POLICY_FILE)
+            receipt = CodexConfirmationGate(
+                store=LocalTradeGateStore(TRADE_GATE_ROOT),
+                approval_ttl_seconds=proposal_policy.proposal_ttl_seconds,
+            ).confirm(
+                proposal_digest=args.digest,
+                confirmation_text=args.confirmation_text,
+            )
+            if args.format == "json":
+                print(json.dumps(receipt.as_dict(), ensure_ascii=False, indent=2))
+            else:
+                print(
+                    "Точный пакет подтверждён в Codex.\n"
+                    f"Digest: {receipt.approval.proposal_digest}\n"
+                    "Подтверждение действует до: "
+                    f"{receipt.approval.expires_at.isoformat()}\n"
+                    "Заявки в БКС не отправлены: "
+                    "изолированный исполнитель ещё отсутствует."
+                )
+            return 0
         if args.command in {
             "portfolio",
             "audit",
@@ -106,14 +166,17 @@ def main(argv: list[str] | None = None) -> int:
             "credit",
             "fundamentals",
             "recommend",
+            "proposal",
         }:
             token_file = args.token_file or _token_file_from_local_env(LOCAL_ENV_FILE)
-            snapshot = PortfolioReader(
-                client=BcsReadClient(),
+            bcs = BcsReadClient()
+            session = PortfolioReader(
+                client=bcs,
                 token_store=PrivateFileRefreshTokenStore(token_file),
                 normalizer=BcsPortfolioNormalizer(),
                 is_iis=True,
-            ).refresh()
+            ).refresh_session()
+            snapshot = session.snapshot
         if args.command == "portfolio":
             renderer = render_portfolio_json if args.format == "json" else render_portfolio_text
             print(renderer(snapshot))
@@ -154,35 +217,88 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(renderer(report))
             return 0
-        if args.command == "recommend":
-            investment_policy = InvestmentPolicy.from_toml(POLICY_FILE)
-            audit = PortfolioAuditor(investment_policy).audit(snapshot)
-            moex = MoexIssClient()
-            ratings = CbrRatingsClient()
-            credit_policy = CreditAnalysisPolicy.from_toml(POLICY_FILE)
-            bonds = BondPortfolioEnricher(moex).enrich(snapshot)
-            credit = CreditPortfolioAnalyzer(
-                ratings,
-                credit_policy,
-            ).analyze(bonds)
-            universe = BondCandidateScreener(
-                moex,
-                ratings,
-                credit_policy,
-                BondUniversePolicy.from_toml(POLICY_FILE),
-            ).screen(snapshot, bonds)
-            report = PortfolioManager(
-                investment_policy,
-                ManagerPolicy.from_toml(POLICY_FILE),
-            ).recommend(audit, bonds, credit, universe)
-            renderer = (
-                render_manager_report_json
-                if args.format == "json"
-                else render_manager_report_text
+        if args.command in {"recommend", "proposal"}:
+            investment_policy, bonds, report = _build_manager_report(snapshot)
+            if args.command == "proposal":
+                actions = _parse_exact_actions(args)
+                proposal = ExactTradeProposalBuilder(
+                    client=bcs,
+                    investment_policy=investment_policy,
+                    proposal_policy=TradeProposalPolicy.from_toml(POLICY_FILE),
+                ).build_manager_actions(
+                    report=report,
+                    snapshot=snapshot,
+                    access_token=session.access_token,
+                    actions=actions,
+                )
+                LocalTradeGateStore(TRADE_GATE_ROOT).save_proposal(proposal)
+                payload = proposal_as_dict(proposal)
+                if args.format == "json":
+                    print(json.dumps(payload, ensure_ascii=False, indent=2))
+                else:
+                    order_lines = "\n".join(
+                        f"- {order.side.value} {order.ticker}: {order.lots} лот(ов), "
+                        f"{order.quantity_units} шт., лимит {order.limit_price}; "
+                        f"до {order.order_valid_until.isoformat()}; "
+                        f"расчётно {order.estimated_cash_rub} ₽"
+                        for order in proposal.orders
+                    )
+                    print(
+                        "Точный пакет лимитных заявок сформирован.\n"
+                        f"{order_lines}\n"
+                        f"Digest: {proposal.digest}\n"
+                        "Для подтверждения: "
+                        f"{payload['required_confirmation_text']}\n"
+                        "Заявки в БКС не отправлены."
+                    )
+                return 0
+
+            payload = report.as_dict()
+            try:
+                checks_complete = True
+                checks = BcsTradeVerifier(bcs).verify_manager_actions(
+                    report,
+                    session.access_token,
+                )
+                payload["bcs_trade_checks"] = [check.as_dict() for check in checks]
+            except BcsApiError as error:
+                checks_complete = False
+                checks = ()
+                payload["bcs_trade_checks"] = []
+                payload["data_failures"].append(str(error))
+            try:
+                rate_report = BondRateModel(
+                    RateScenarioPolicy.from_toml(POLICY_FILE)
+                ).analyze(bonds, CbrKeyRateClient().fetch())
+                payload["rate_model"] = rate_report.as_dict()
+            except CbrKeyRateError as error:
+                rate_report = None
+                payload["rate_model"] = {"status": "UNAVAILABLE", "error": str(error)}
+                payload["data_failures"].append(str(error))
+            payload["data_failures"] = sorted(set(payload["data_failures"]))
+            payload["trade_gate"].update(
+                {
+                    "bcs_catalog_checks_complete": checks_complete,
+                    "exact_package_command_available": True,
+                    "codex_confirmation_available": True,
+                    "broker_executor_available": False,
+                }
             )
-            print(renderer(report))
+            if args.format == "json":
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                additions = _render_recommendation_additions(checks, rate_report)
+                print(render_manager_report_text(report) + additions)
             return 0
-    except (BcsApiError, PortfolioContractError, SecretStoreError) as error:
+    except (
+        ApprovalViolation,
+        BcsApiError,
+        CbrKeyRateError,
+        PortfolioContractError,
+        PolicyViolation,
+        SecretStoreError,
+        TradeProposalError,
+    ) as error:
         print(f"Ошибка: {error}", file=sys.stderr)
         return 2
     raise AssertionError("unreachable command")
@@ -192,7 +308,9 @@ def _token_file_from_local_env(env_file: Path) -> Path:
     try:
         lines = env_file.read_text(encoding="utf-8").splitlines()
     except OSError as error:
-        raise SecretStoreError("Локальный .env с путём к read-only токену не найден") from error
+        raise SecretStoreError(
+            "Локальный .env с путём к read-only токену не найден"
+        ) from error
 
     configured: list[str] = []
     for line in lines:
@@ -203,10 +321,84 @@ def _token_file_from_local_env(env_file: Path) -> Path:
         if separator and key.strip() == TOKEN_FILE_ENV_KEY:
             configured.append(value.strip().strip('"').strip("'"))
     if len(configured) != 1 or not configured[0]:
-        raise SecretStoreError(f"В .env должен быть ровно один {TOKEN_FILE_ENV_KEY}")
+        raise SecretStoreError(
+            f"В .env должен быть ровно один {TOKEN_FILE_ENV_KEY}"
+        )
 
     path = Path(configured[0]).expanduser()
     return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def _parse_exact_actions(args) -> tuple[tuple[str, Side], ...]:
+    raw_actions = args.action or []
+    if raw_actions and (args.isin is not None or args.side is not None):
+        raise TradeProposalError("--action cannot be mixed with --isin or --side")
+    if raw_actions:
+        parsed: list[tuple[str, Side]] = []
+        for raw in raw_actions:
+            side_text, separator, isin = raw.partition(":")
+            if not separator or not isin.strip():
+                raise TradeProposalError("each --action must use SIDE:ISIN")
+            try:
+                side = Side(side_text.strip().upper())
+            except ValueError as error:
+                raise TradeProposalError("each --action side must be BUY or SELL") from error
+            parsed.append((isin.strip().upper(), side))
+        return tuple(parsed)
+    if args.isin is None or args.side is None:
+        raise TradeProposalError("proposal requires --action or both --isin and --side")
+    return ((args.isin.strip().upper(), Side(args.side)),)
+
+
+def _build_manager_report(snapshot):
+    investment_policy = InvestmentPolicy.from_toml(POLICY_FILE)
+    audit = PortfolioAuditor(investment_policy).audit(snapshot)
+    moex = MoexIssClient()
+    ratings = CbrRatingsClient()
+    credit_policy = CreditAnalysisPolicy.from_toml(POLICY_FILE)
+    bonds = BondPortfolioEnricher(moex).enrich(snapshot)
+    credit = CreditPortfolioAnalyzer(ratings, credit_policy).analyze(bonds)
+    universe = BondCandidateScreener(
+        moex,
+        ratings,
+        credit_policy,
+        BondUniversePolicy.from_toml(POLICY_FILE),
+    ).screen(snapshot, bonds)
+    report = PortfolioManager(
+        investment_policy,
+        ManagerPolicy.from_toml(POLICY_FILE),
+    ).recommend(audit, bonds, credit, universe)
+    return investment_policy, bonds, report
+
+
+def _render_recommendation_additions(checks, rate_report) -> str:
+    lines = ["", "", "Проверка БКС:"]
+    if not checks:
+        lines.append(
+            "- нет действий с положительной суммой для точной проверки"
+        )
+    for check in checks:
+        status = (
+            "доступен в справочнике"
+            if check.broker_catalog_available
+            else "заблокирован"
+        )
+        lines.append(
+            f"- {check.side.value} {check.isin}: {status}; "
+            f"лот {check.lot_size or 'н/д'}; сессия "
+            f"{'открыта' if check.trading_is_open else 'закрыта'}"
+        )
+    lines.extend(["", "Модель ставки:"])
+    if rate_report is None:
+        lines.append("- недоступна")
+    else:
+        lines.append(
+            f"- ключевая ставка {rate_report.observation.value_percent}% "
+            f"с {rate_report.observation.effective_date.isoformat()}"
+        )
+        for bond in rate_report.bonds:
+            lines.append(f"- {bond.ticker}: {bond.model_type}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

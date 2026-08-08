@@ -59,6 +59,27 @@ minimum_allocation_rub = 5000
 allocation_rounding_rub = 100
 maximum_single_purchase_share_of_cash = 0.40
 
+[rate_model]
+# Transparent 12-month sensitivities. Scenario shifts are assumptions, not forecasts.
+horizon_months = 12
+long_duration_threshold_days = 730
+corporate_rate_pass_through = 0.75
+
+[[rate_model.scenarios]]
+code = "FAST_EASING"
+label = "Быстрое снижение ставки"
+key_rate_change_percent = -4.0
+
+[[rate_model.scenarios]]
+code = "BASE_EASING"
+label = "Умеренное снижение ставки"
+key_rate_change_percent = -1.5
+
+[[rate_model.scenarios]]
+code = "HIGHER_FOR_LONGER"
+label = "Ставка остаётся высокой"
+key_rate_change_percent = 1.0
+
 [universe]
 # Fast MOEX shortlist before exact proposal construction. Not an order universe.
 board_id = "TQCB"
@@ -81,6 +102,8 @@ allowed_currency = "RUB"
 limit_orders_only = true
 explicit_external_approval_required = true
 approval_ttl_seconds = 600
+order_validity_seconds = 3600
+maximum_quote_age_seconds = 60
 max_price_drift_bps = 25
 allow_margin = false
 allow_derivatives = false
