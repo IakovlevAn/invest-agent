@@ -26,7 +26,11 @@ class InvestmentPolicy:
     warning_drawdown: Decimal
     maximum_drawdown: Decimal
     target_bond_share: Decimal
+    target_bond_share_is_hard_limit: bool
+    regular_contribution_rub: Decimal
     allow_ofz: bool
+    position_concentration_warning_share: Decimal
+    material_blocked_share: Decimal
     allowed_instrument_types: frozenset[InstrumentType]
     limit_orders_only: bool
     explicit_external_approval_required: bool
@@ -47,6 +51,7 @@ class InvestmentPolicy:
         portfolio = raw["portfolio"]
         risk = raw["risk"]
         trading = raw["trading"]
+        analytics = raw["analytics"]
         return cls(
             base_currency=objective["base_currency"],
             target_annual_return=Decimal(str(objective["current_target_annual_return"])),
@@ -54,7 +59,13 @@ class InvestmentPolicy:
             warning_drawdown=Decimal(str(risk["warning_drawdown"])),
             maximum_drawdown=Decimal(str(risk["maximum_drawdown"])),
             target_bond_share=Decimal(str(portfolio["target_bond_share"])),
+            target_bond_share_is_hard_limit=portfolio["target_bond_share_is_hard_limit"],
+            regular_contribution_rub=Decimal(str(portfolio["regular_contribution_rub"])),
             allow_ofz=portfolio["allow_ofz"],
+            position_concentration_warning_share=Decimal(
+                str(analytics["position_concentration_warning_share"])
+            ),
+            material_blocked_share=Decimal(str(analytics["material_blocked_share"])),
             allowed_instrument_types=frozenset(
                 InstrumentType(value) for value in trading["allowed_instrument_types"]
             ),

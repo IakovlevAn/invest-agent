@@ -50,6 +50,13 @@ class InvestmentPolicyTests(unittest.TestCase):
     def test_loads_agreed_mandate(self) -> None:
         self.assertEqual(self.policy.target_annual_return, Decimal("0.2"))
         self.assertEqual(self.policy.maximum_drawdown, Decimal("0.15"))
+        self.assertEqual(self.policy.target_bond_share, Decimal("0.9"))
+        self.assertFalse(self.policy.target_bond_share_is_hard_limit)
+        self.assertEqual(self.policy.regular_contribution_rub, Decimal("50000"))
+        self.assertEqual(
+            self.policy.position_concentration_warning_share,
+            Decimal("0.2"),
+        )
         self.assertFalse(self.policy.target_is_guarantee)
         self.assertTrue(self.policy.explicit_external_approval_required)
 

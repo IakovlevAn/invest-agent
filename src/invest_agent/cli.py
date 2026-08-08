@@ -6,7 +6,9 @@ import argparse
 import sys
 from pathlib import Path
 
+from invest_agent.audit import PortfolioAuditor, render_audit_json, render_audit_text
 from invest_agent.brokers.bcs import BcsApiError, BcsReadClient
+from invest_agent.policy import InvestmentPolicy
 from invest_agent.portfolio import (
     BcsPortfolioNormalizer,
     PortfolioContractError,
@@ -22,6 +24,7 @@ from invest_agent.secrets import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_ENV_FILE = PROJECT_ROOT / ".env"
 TOKEN_FILE_ENV_KEY = "INVEST_AGENT_TOKEN_FILE"
+POLICY_FILE = PROJECT_ROOT / "config" / "investment_policy.toml"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,19 +32,26 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     portfolio = commands.add_parser("portfolio", help="Read and normalize the BCS portfolio")
-    portfolio.add_argument("--format", choices=("text", "json"), default="text")
-    portfolio.add_argument(
+    _add_read_options(portfolio)
+
+    audit = commands.add_parser("audit", help="Run a deterministic point-in-time audit")
+    _add_read_options(audit)
+    return parser
+
+
+def _add_read_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--format", choices=("text", "json"), default="text")
+    command.add_argument(
         "--token-file",
         type=Path,
         help="Private mode-600 refresh-token file; defaults to INVEST_AGENT_TOKEN_FILE in .env",
     )
-    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command == "portfolio":
+        if args.command in {"portfolio", "audit"}:
             token_file = args.token_file or _token_file_from_local_env(LOCAL_ENV_FILE)
             snapshot = PortfolioReader(
                 client=BcsReadClient(),
@@ -49,8 +59,14 @@ def main(argv: list[str] | None = None) -> int:
                 normalizer=BcsPortfolioNormalizer(),
                 is_iis=True,
             ).refresh()
+        if args.command == "portfolio":
             renderer = render_portfolio_json if args.format == "json" else render_portfolio_text
             print(renderer(snapshot))
+            return 0
+        if args.command == "audit":
+            audit = PortfolioAuditor(InvestmentPolicy.from_toml(POLICY_FILE)).audit(snapshot)
+            renderer = render_audit_json if args.format == "json" else render_audit_text
+            print(renderer(audit))
             return 0
     except (BcsApiError, PortfolioContractError, SecretStoreError) as error:
         print(f"Ошибка: {error}", file=sys.stderr)

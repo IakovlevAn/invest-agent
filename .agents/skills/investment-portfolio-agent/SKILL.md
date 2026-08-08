@@ -18,6 +18,8 @@ calculations and policy checks.
    snapshot. The local `.env` contains only `INVEST_AGENT_TOKEN_FILE`; the token
    itself is in the ignored mode-600 `.local/secrets/` file.
    Do not reconstruct holdings from conversation memory.
+   For allocation, concentration and mandate diagnostics, run
+   `uv run invest-agent audit --format json` after or instead of the raw snapshot.
 4. If the read-only token file is not configured, create a mode-600 carrier
    file under `/private/tmp` and have the user paste the token into it using
    their own local editor. Never read or print that file. Move it without
@@ -48,7 +50,9 @@ with the 10–15% drawdown budget, say that directly and prefer the risk mandate
 For “what should I buy/sell?”, “where should I invest 50,000 ₽?” or similar:
 
 1. Refresh the portfolio.
-2. Identify cash, blocked assets, concentration, duration and missing data.
+2. Run the deterministic audit to identify cash, blocked assets, position
+   concentration, the managed sleeve and missing data. Do not call position HHI
+   issuer concentration; issuer aggregation requires enrichment.
 3. Refresh relevant market and issuer evidence.
 4. Compare at least: no action, invest new cash, and rebalance when applicable.
 5. Apply deterministic policy checks before presenting a proposal.
