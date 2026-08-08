@@ -14,20 +14,21 @@ calculations and policy checks.
 1. Locate the repository root with `git rev-parse --show-toplevel`.
 2. Read `docs/INVESTMENT_MANDATE.md` and `config/investment_policy.toml` when the
    task could change allocation or lead to a transaction.
-3. Run `uv run invest-agent portfolio --format json` to obtain the current BCS
-   snapshot. The local `.env` contains only `INVEST_AGENT_TOKEN_FILE`; the token
+3. For an investment decision, run `uv run invest-agent recommend --format json`.
+   This single hot-path command refreshes the BCS portfolio, deterministic audit,
+   MOEX bond facts and Bank of Russia rating evidence, then compares no action,
+   investing current cash and rebalancing. The local `.env` contains only
+   `INVEST_AGENT_TOKEN_FILE`; the token
    itself is in the ignored mode-600 `.local/secrets/` file.
    Do not reconstruct holdings from conversation memory.
    For allocation, concentration and mandate diagnostics, run
    `uv run invest-agent audit --format json` after or instead of the raw snapshot.
-   For bond decisions, also run `uv run invest-agent bonds --format json` to
-   refresh official MOEX issue, issuer, yield, duration and same-day liquidity
-   facts. Then run `uv run invest-agent credit --format json` to refresh issuer
-   and exact-issue rating actions from the official Bank of Russia repository.
-   Run `uv run invest-agent fundamentals --format json` for annual standalone
-   RAS statements from FNS GIR BO and the complete MOEX schedule of coupons,
-   amortizations and offers. Never treat standalone RAS as consolidated group
-   reporting; keep absent or access-restricted statements explicit.
+   The lower-level `audit`, `bonds` and `credit` commands remain available for
+   diagnosis. Do not block a routine recommendation on annual reports: annual
+   standalone RAS is lagging background evidence. Run `fundamentals` only for an
+   escalated issuer review where that evidence can change the decision. Never
+   treat standalone RAS as consolidated group reporting; keep absent or
+   access-restricted statements explicit.
    Treat public data as possibly delayed and use its timestamps. A broad rating
    band is a diagnostic mapping, not a PD estimate or a cross-agency score.
 4. If the read-only token file is not configured, create a mode-600 carrier
@@ -37,7 +38,7 @@ calculations and policy checks.
    the ignored local `.env`.
 
    ```bash
-   uv run invest-agent portfolio --format json
+   uv run invest-agent recommend --format json
    ```
 
    Explain that the private local file keeps the token out of chat and Git. Resume
@@ -59,17 +60,14 @@ with the 10–15% drawdown budget, say that directly and prefer the risk mandate
 
 For “what should I buy/sell?”, “where should I invest 50,000 ₽?” or similar:
 
-1. Refresh the portfolio.
-2. Run the deterministic audit to identify cash, blocked assets, position
-   concentration, the managed sleeve and missing data. Do not call position HHI
-   issuer concentration; issuer aggregation requires enrichment.
-3. Run the bond enrichment for MOEX market facts and issuer aggregation, then
-   run the credit passports for CBR rating evidence, then refresh RAS and payment
-   schedule evidence with the fundamental passports. Refresh remaining IFRS,
-   covenants, security, group support and macro evidence from primary sources.
-4. Compare at least: no action, invest new cash, and rebalance when applicable.
-5. Apply deterministic policy checks before presenting a proposal.
-6. Give a concise Russian response with:
+1. Run the hot-path `recommend` command. It refreshes the portfolio and applies
+   the deterministic audit, issuer aggregation, credit checks, concentration
+   limits and three scenarios.
+2. If it raises a critical or ambiguous issuer signal, investigate only that
+   issuer with the relevant primary evidence. Do not download broad disclosure
+   archives for a routine portfolio answer.
+3. Apply deterministic policy checks before presenting a proposal.
+4. Give a concise Russian response with:
    - decision and amount;
    - effect on portfolio risk and expected return;
    - key evidence with timestamps;

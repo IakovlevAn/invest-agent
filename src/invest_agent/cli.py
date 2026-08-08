@@ -26,6 +26,12 @@ from invest_agent.fundamentals import (
     render_fundamental_report_json,
     render_fundamental_report_text,
 )
+from invest_agent.manager import (
+    ManagerPolicy,
+    PortfolioManager,
+    render_manager_report_json,
+    render_manager_report_text,
+)
 from invest_agent.market.moex import MoexIssClient
 from invest_agent.policy import InvestmentPolicy
 from invest_agent.portfolio import (
@@ -71,6 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build RAS and bond payment-schedule passports from FNS and MOEX",
     )
     _add_read_options(fundamentals)
+
+    recommend = commands.add_parser(
+        "recommend",
+        help="Build an approval-gated portfolio-manager recommendation",
+    )
+    _add_read_options(recommend)
     return parser
 
 
@@ -86,7 +98,14 @@ def _add_read_options(command: argparse.ArgumentParser) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command in {"portfolio", "audit", "bonds", "credit", "fundamentals"}:
+        if args.command in {
+            "portfolio",
+            "audit",
+            "bonds",
+            "credit",
+            "fundamentals",
+            "recommend",
+        }:
             token_file = args.token_file or _token_file_from_local_env(LOCAL_ENV_FILE)
             snapshot = PortfolioReader(
                 client=BcsReadClient(),
@@ -131,6 +150,25 @@ def main(argv: list[str] | None = None) -> int:
                 render_fundamental_report_json
                 if args.format == "json"
                 else render_fundamental_report_text
+            )
+            print(renderer(report))
+            return 0
+        if args.command == "recommend":
+            investment_policy = InvestmentPolicy.from_toml(POLICY_FILE)
+            audit = PortfolioAuditor(investment_policy).audit(snapshot)
+            bonds = BondPortfolioEnricher(MoexIssClient()).enrich(snapshot)
+            credit = CreditPortfolioAnalyzer(
+                CbrRatingsClient(),
+                CreditAnalysisPolicy.from_toml(POLICY_FILE),
+            ).analyze(bonds)
+            report = PortfolioManager(
+                investment_policy,
+                ManagerPolicy.from_toml(POLICY_FILE),
+            ).recommend(audit, bonds, credit)
+            renderer = (
+                render_manager_report_json
+                if args.format == "json"
+                else render_manager_report_text
             )
             print(renderer(report))
             return 0

@@ -51,6 +51,13 @@ current_ratio_warning = 1.00
 debt_to_equity_warning = 3.00
 near_term_event_days = 365
 
+[manager]
+# Fast recommendation hot path. These are allocation guards, not trade orders.
+max_bond_issuer_share_after_add = 0.15
+speculative_reduce_fraction = 0.50
+minimum_allocation_rub = 5000
+allocation_rounding_rub = 100
+
 [trading]
 mode = "RECOMMEND_AND_CONFIRM"
 allowed_instrument_types = ["BOND", "STOCK", "FUND"]
