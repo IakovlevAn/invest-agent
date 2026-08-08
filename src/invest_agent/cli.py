@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
+from decimal import ROUND_FLOOR, Decimal
 from pathlib import Path
 
 from invest_agent.approval import ApprovalViolation
@@ -315,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
             print(renderer(report))
             return 0
         if args.command in {"recommend", "proposal"}:
-            investment_policy, bonds, report = _build_manager_report(snapshot)
+            investment_policy, audit, bonds, manager, report = _build_manager_report(snapshot)
             if args.command == "proposal":
                 actions = _parse_exact_actions(args)
                 proposal = ExactTradeProposalBuilder(
@@ -355,19 +357,37 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 return 0
 
-            payload = report.as_dict()
             try:
                 checks_complete = True
-                checks = BcsTradeVerifier(bcs).verify_manager_actions(
+                verifier = BcsTradeVerifier(bcs)
+                preliminary_checks = verifier.verify_manager_actions(
+                    report,
+                    session.access_token,
+                    include_unallocated_buys=True,
+                )
+                report = manager.apply_bcs_buy_availability(
+                    report,
+                    audit,
+                    bonds,
+                    {
+                        check.isin
+                        for check in preliminary_checks
+                        if check.side is Side.BUY and check.broker_catalog_available
+                    },
+                )
+                checks = verifier.verify_manager_actions(
                     report,
                     session.access_token,
                 )
-                payload["bcs_trade_checks"] = [check.as_dict() for check in checks]
             except BcsApiError as error:
                 checks_complete = False
                 checks = ()
-                payload["bcs_trade_checks"] = []
-                payload["data_failures"].append(str(error))
+                report = replace(
+                    report,
+                    data_failures=tuple(sorted({*report.data_failures, str(error)})),
+                )
+            payload = report.as_dict()
+            payload["bcs_trade_checks"] = [check.as_dict() for check in checks]
             try:
                 rate_report = BondRateModel(
                     RateScenarioPolicy.from_toml(POLICY_FILE)
@@ -389,7 +409,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.format == "json":
                 print(json.dumps(payload, ensure_ascii=False, indent=2))
             else:
-                additions = _render_recommendation_additions(checks, rate_report)
+                additions = _render_recommendation_additions(
+                    checks,
+                    rate_report,
+                    checks_complete=checks_complete,
+                )
                 print(render_manager_report_text(report) + additions)
             return 0
     except (
@@ -505,16 +529,24 @@ def _build_manager_report(snapshot):
         credit_policy,
         BondUniversePolicy.from_toml(POLICY_FILE),
     ).screen(snapshot, bonds)
-    report = PortfolioManager(
+    manager = PortfolioManager(
         investment_policy,
         ManagerPolicy.from_toml(POLICY_FILE),
-    ).recommend(audit, bonds, credit, universe)
-    return investment_policy, bonds, report
+    )
+    report = manager.recommend(audit, bonds, credit, universe)
+    return investment_policy, audit, bonds, manager, report
 
 
-def _render_recommendation_additions(checks, rate_report) -> str:
+def _render_recommendation_additions(
+    checks,
+    rate_report,
+    *,
+    checks_complete: bool = True,
+) -> str:
     lines = ["", "", "Проверка БКС:"]
-    if not checks:
+    if not checks_complete:
+        lines.append("- проверка недоступна; рекомендации нельзя считать исполнимыми")
+    elif not checks:
         lines.append("- нет действий с положительной суммой для точной проверки")
     for check in checks:
         status = (
@@ -522,11 +554,20 @@ def _render_recommendation_additions(checks, rate_report) -> str:
             if check.broker_catalog_available
             else "заблокирован"
         )
-        lines.append(
+        line = (
             f"- {check.side.value} {check.isin}: {status}; "
             f"лот {check.lot_size or 'н/д'}; сессия "
             f"{'открыта' if check.trading_is_open else 'закрыта'}"
         )
+        estimated = _estimate_bond_action(check)
+        if estimated is not None:
+            lots, units, price, cash = estimated
+            quote_side = "offer" if check.side is Side.BUY else "bid"
+            line += (
+                f"; ориентир {units} шт. ({lots} лот.), {quote_side} "
+                f"{price}% и грязная сумма {cash:,.0f} ₽"
+            )
+        lines.append(line)
     lines.extend(["", "Модель ставки:"])
     if rate_report is None:
         lines.append("- недоступна")
@@ -538,6 +579,33 @@ def _render_recommendation_additions(checks, rate_report) -> str:
         for bond in rate_report.bonds:
             lines.append(f"- {bond.ticker}: {bond.model_type}")
     return "\n".join(lines)
+
+
+def _estimate_bond_action(check) -> tuple[int, int, Decimal, Decimal] | None:
+    price = check.offer if check.side is Side.BUY else check.bid
+    if (
+        price is None
+        or check.face_value is None
+        or check.accrued_interest is None
+        or check.lot_size is None
+        or check.lot_size <= 0
+    ):
+        return None
+    dirty_unit_cost = (
+        check.face_value * price / Decimal("100") + check.accrued_interest
+    )
+    if dirty_unit_cost <= 0:
+        return None
+    units_by_amount = int(
+        (check.target_amount_rub / dirty_unit_cost).to_integral_value(
+            rounding=ROUND_FLOOR
+        )
+    )
+    lots = units_by_amount // check.lot_size
+    if lots <= 0:
+        return None
+    units = lots * check.lot_size
+    return lots, units, price, dirty_unit_cost * units
 
 
 if __name__ == "__main__":

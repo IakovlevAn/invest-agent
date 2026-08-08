@@ -227,9 +227,9 @@ class ExactTradeProposalTests(unittest.TestCase):
 
         order = proposal.orders[0]
         self.assertEqual(order.limit_price, Decimal("99.90"))
-        self.assertEqual(order.lots, 9)
-        self.assertEqual(order.quantity_units, 9)
-        self.assertEqual(order.estimated_cash_rub, Decimal("9081.00"))
+        self.assertEqual(order.lots, 10)
+        self.assertEqual(order.quantity_units, 10)
+        self.assertEqual(order.estimated_cash_rub, Decimal("10090.00"))
         self.assertEqual(proposal.expires_at, NOW + timedelta(minutes=10))
         self.assertEqual(order.order_valid_until, NOW + timedelta(hours=1))
         self.assertEqual(len(proposal.digest), 64)

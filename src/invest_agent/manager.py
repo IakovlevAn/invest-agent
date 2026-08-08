@@ -45,6 +45,11 @@ class ManagerPolicy:
     allocation_rounding_rub: Decimal
     maximum_single_purchase_share_of_cash: Decimal
     maximum_list_level_for_add: int = 2
+    minimum_add_yield_percent: Decimal = Decimal("20")
+    maximum_add_yield_percent: Decimal = Decimal("30")
+    minimum_add_duration_days: Decimal = Decimal("90")
+    minimum_add_turnover_rub: Decimal = Decimal("0")
+    third_level_minimum_rating_band: RatingBand = RatingBand.STRONG
 
     @classmethod
     def from_toml(cls, path: str | Path) -> ManagerPolicy:
@@ -76,7 +81,29 @@ class ManagerPolicy:
                 document["universe"]["maximum_list_level"],
                 "universe.maximum_list_level",
             ),
+            minimum_add_yield_percent=_positive_decimal(
+                document["universe"]["minimum_yield_percent"],
+                "universe.minimum_yield_percent",
+            ),
+            maximum_add_yield_percent=_positive_decimal(
+                document["universe"]["maximum_yield_percent"],
+                "universe.maximum_yield_percent",
+            ),
+            minimum_add_duration_days=_positive_decimal(
+                document["universe"]["minimum_duration_days"],
+                "universe.minimum_duration_days",
+            ),
+            minimum_add_turnover_rub=_positive_decimal(
+                document["universe"]["minimum_turnover_rub"],
+                "universe.minimum_turnover_rub",
+            ),
+            third_level_minimum_rating_band=_rating_band(
+                document["universe"]["third_level_minimum_rating_band"],
+                "universe.third_level_minimum_rating_band",
+            ),
         )
+        if policy.minimum_add_yield_percent >= policy.maximum_add_yield_percent:
+            raise ValueError("universe yield range is invalid")
         return policy
 
 
@@ -96,6 +123,7 @@ class BondManagerDecision:
     recommended_reduce_rub: Decimal
     reasons: tuple[str, ...]
     exit_triggers: tuple[str, ...]
+    credit_warning: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +146,7 @@ class NewBondManagerDecision:
     bcs_availability_verified: bool
     moex_security_url: str
     moex_market_url: str
+    list_level: int = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +154,9 @@ class ManagerScenario:
     code: str
     recommended: bool
     invested_cash_rub: Decimal
+    estimated_sale_proceeds_rub: Decimal
     remaining_cash_rub: Decimal
+    net_bond_change_rub: Decimal
     projected_bond_share_managed: Decimal
     comparable_bond_yield_percent: Decimal | None
     required_stock_sales_rub: Decimal
@@ -258,12 +289,14 @@ class PortfolioManager:
             )
             for record in bonds.positions
         ]
+        decisions = self._apply_concentration_trims(decisions, bonds)
         new_candidates = _new_candidate_decisions(universe)
+        planned_sale_proceeds = _planned_sale_proceeds(decisions)
         decisions, new_candidates = self._allocate_cash(
             decisions,
             new_candidates,
             bonds,
-            audit.cash_rub,
+            audit.cash_rub + planned_sale_proceeds,
         )
         current_yield, yield_coverage = _comparable_yield(bonds.positions)
         stressed_value = sum(
@@ -282,7 +315,7 @@ class PortfolioManager:
             new_candidates,
             current_yield=current_yield,
         )
-        primary_action = _primary_action(decisions)
+        primary_action = _primary_action(decisions, new_candidates)
         failures = tuple(
             sorted(
                 {
@@ -341,6 +374,71 @@ class PortfolioManager:
             ),
         )
 
+    def apply_bcs_buy_availability(
+        self,
+        report: PortfolioManagerReport,
+        audit: PortfolioAudit,
+        bonds: BondMarketReport,
+        available_buy_isins: set[str],
+    ) -> PortfolioManagerReport:
+        decisions = [
+            replace(
+                decision,
+                action=(
+                    ManagerAction.DO_NOT_ADD
+                    if decision.action is ManagerAction.ADD_CANDIDATE
+                    and decision.isin not in available_buy_isins
+                    else decision.action
+                ),
+                recommended_add_rub=Decimal("0"),
+                reasons=(
+                    tuple(
+                        dict.fromkeys(
+                            (
+                                *decision.reasons,
+                                "покупка выпуска недоступна в справочнике БКС",
+                            )
+                        )
+                    )
+                    if decision.action is ManagerAction.ADD_CANDIDATE
+                    and decision.isin not in available_buy_isins
+                    else decision.reasons
+                ),
+            )
+            for decision in report.decisions
+        ]
+        candidates = [
+            replace(
+                candidate,
+                recommended_add_rub=Decimal("0"),
+                bcs_availability_verified=candidate.isin in available_buy_isins,
+            )
+            for candidate in report.new_bond_candidates
+            if candidate.isin in available_buy_isins
+        ]
+        decisions, candidates = self._allocate_cash(
+            decisions,
+            candidates,
+            bonds,
+            report.cash_rub + _planned_sale_proceeds(decisions),
+        )
+        scenarios = self._scenarios(
+            audit,
+            bonds,
+            decisions,
+            candidates,
+            current_yield=report.current_comparable_bond_yield_percent,
+        )
+        return replace(
+            report,
+            decisions=tuple(sorted(decisions, key=_decision_sort_key)),
+            new_bond_candidates=tuple(
+                sorted(candidates, key=lambda item: (-item.ranking_score, item.ticker))
+            ),
+            scenarios=scenarios,
+            primary_action=_primary_action(decisions, candidates),
+        )
+
     def _decision(
         self,
         record: EnrichedBondPosition,
@@ -351,6 +449,7 @@ class PortfolioManager:
         comparable_yield = record.comparable_effective_yield_percent
         duration = None if market is None else market.duration_days
         reasons: list[str] = []
+        has_credit_warning = False
         exits = [
             "подтверждённый дефолт или пропуск платежа",
             "понижение рейтинга в спекулятивную зону или отзыв всех рейтингов",
@@ -369,6 +468,7 @@ class PortfolioManager:
             warnings = [
                 signal for signal in credit.signals if signal.severity is SignalSeverity.WARNING
             ]
+            has_credit_warning = bool(warnings)
             speculative = any(signal.code == "SPECULATIVE_RATING" for signal in warnings)
             if critical:
                 action = ManagerAction.URGENT_REVIEW
@@ -393,12 +493,35 @@ class PortfolioManager:
                 reasons.append(
                     "уровень листинга выпуска выше допуска для новых покупок"
                 )
+            elif (
+                record.moex.facts.list_level == 3
+                and _band_rank(band)
+                > _band_rank(self._manager_policy.third_level_minimum_rating_band)
+            ):
+                action = ManagerAction.DO_NOT_ADD
+                reasons.append(
+                    "для третьего уровня листинга кредитный рейтинг недостаточно высок"
+                )
             elif comparable_yield is None:
                 action = ManagerAction.HOLD
                 reasons.append("доходность флоатера требует отдельного сценария ставки")
-            elif comparable_yield >= self._investment_policy.target_annual_return * 100:
+            elif duration is None or duration < self._manager_policy.minimum_add_duration_days:
+                action = ManagerAction.DO_NOT_ADD
+                reasons.append("дюрация ниже допуска для новой покупки")
+            elif market is None or market.turnover_today_rub is None or (
+                market.turnover_today_rub < self._manager_policy.minimum_add_turnover_rub
+            ):
+                action = ManagerAction.DO_NOT_ADD
+                reasons.append("ликвидность выпуска ниже допуска для новой покупки")
+            elif (
+                self._manager_policy.minimum_add_yield_percent
+                <= comparable_yield
+                <= self._manager_policy.maximum_add_yield_percent
+            ):
                 action = ManagerAction.ADD_CANDIDATE
-                reasons.append("рыночная эффективная доходность не ниже тактической цели")
+                reasons.append(
+                    "доходность входит в допустимый диапазон портфельной стратегии"
+                )
                 reasons.append("текущий рейтинг не находится в спекулятивной зоне")
             else:
                 action = ManagerAction.HOLD
@@ -406,10 +529,14 @@ class PortfolioManager:
 
         reduction = Decimal("0")
         if action is ManagerAction.REDUCE_RISK:
-            reduction = _round_down(
+            reduction = (
                 record.position.market_value_rub
-                * self._manager_policy.speculative_reduce_fraction,
-                self._manager_policy.allocation_rounding_rub,
+                if self._manager_policy.speculative_reduce_fraction == Decimal("1")
+                else _round_down(
+                    record.position.market_value_rub
+                    * self._manager_policy.speculative_reduce_fraction,
+                    self._manager_policy.allocation_rounding_rub,
+                )
             )
         if action is ManagerAction.URGENT_REVIEW:
             exits.insert(0, "подтверждение, что технический/default-флаг MOEX актуален")
@@ -432,7 +559,73 @@ class PortfolioManager:
             recommended_reduce_rub=reduction,
             reasons=tuple(dict.fromkeys(reasons)),
             exit_triggers=tuple(exits),
+            credit_warning=has_credit_warning,
         )
+
+    def _apply_concentration_trims(
+        self,
+        decisions: list[BondManagerDecision],
+        bonds: BondMarketReport,
+    ) -> list[BondManagerDecision]:
+        updated = list(decisions)
+        target_share = self._manager_policy.max_bond_issuer_share_after_add
+        for _ in range(20):
+            changed = False
+            for exposure in bonds.issuer_exposures:
+                eligible_indexes = sorted(
+                    (
+                        index
+                        for index, decision in enumerate(updated)
+                        if decision.emitter_id == exposure.emitter_id
+                        and decision.credit_warning
+                        and decision.action
+                        in {ManagerAction.DO_NOT_ADD, ManagerAction.REDUCE_RISK}
+                    ),
+                    key=lambda index: -updated[index].market_value_rub,
+                )
+                if not eligible_indexes:
+                    continue
+                sleeve_after_sales = bonds.bond_value_rub - _planned_sale_proceeds(updated)
+                allowed_value = max(Decimal("0"), sleeve_after_sales * target_share)
+                issuer_reduction = sum(
+                    (updated[index].recommended_reduce_rub for index in eligible_indexes),
+                    Decimal("0"),
+                )
+                required_reduction = _round_up(
+                    max(Decimal("0"), exposure.value_rub - allowed_value),
+                    self._manager_policy.allocation_rounding_rub,
+                )
+                remaining = required_reduction - issuer_reduction
+                for index in eligible_indexes:
+                    if remaining <= 0:
+                        break
+                    decision = updated[index]
+                    capacity = (
+                        decision.market_value_rub - decision.recommended_reduce_rub
+                    )
+                    extra = min(remaining, capacity)
+                    if extra <= 0:
+                        continue
+                    updated[index] = replace(
+                        decision,
+                        action=ManagerAction.REDUCE_RISK,
+                        recommended_reduce_rub=(
+                            decision.recommended_reduce_rub + extra
+                        ),
+                        reasons=tuple(
+                            dict.fromkeys(
+                                (
+                                    *decision.reasons,
+                                    "концентрация эмитента выше лимита 15% после сокращений",
+                                )
+                            )
+                        ),
+                    )
+                    remaining -= extra
+                    changed = True
+            if not changed:
+                break
+        return updated
 
     def _allocate_cash(
         self,
@@ -518,13 +711,15 @@ class PortfolioManager:
             (candidate.recommended_add_rub for candidate in new_candidates),
             Decimal("0"),
         )
+        sale_proceeds = _planned_sale_proceeds(decisions)
         invested_yield = _yield_after_allocations(
             bonds.positions,
             decisions,
             new_candidates,
         )
+        net_bond_change = invested - sale_proceeds
         projected_share = _share(
-            bonds.bond_value_rub + invested,
+            bonds.bond_value_rub + net_bond_change,
             audit.managed_value_rub,
         )
         stock_sales = max(Decimal("0"), audit.bond_target_gap_rub - audit.cash_rub)
@@ -537,7 +732,9 @@ class PortfolioManager:
                 code="NO_ACTION",
                 recommended=False,
                 invested_cash_rub=Decimal("0"),
+                estimated_sale_proceeds_rub=Decimal("0"),
                 remaining_cash_rub=audit.cash_rub,
+                net_bond_change_rub=Decimal("0"),
                 projected_bond_share_managed=audit.bond_share_managed,
                 comparable_bond_yield_percent=current_yield,
                 required_stock_sales_rub=Decimal("0"),
@@ -545,19 +742,29 @@ class PortfolioManager:
             ),
             ManagerScenario(
                 code="INVEST_CURRENT_CASH",
-                recommended=invested > 0 and not risk_reduction_first,
+                recommended=(invested > 0 or sale_proceeds > 0)
+                and not any(
+                    decision.action is ManagerAction.URGENT_REVIEW
+                    for decision in decisions
+                ),
                 invested_cash_rub=invested,
-                remaining_cash_rub=audit.cash_rub - invested,
+                estimated_sale_proceeds_rub=sale_proceeds,
+                remaining_cash_rub=audit.cash_rub + sale_proceeds - invested,
+                net_bond_change_rub=net_bond_change,
                 projected_bond_share_managed=projected_share,
                 comparable_bond_yield_percent=invested_yield,
                 required_stock_sales_rub=Decimal("0"),
                 explanation=(
-                    "кандидатное распределение рассчитано, но новый риск разрешён только "
-                    "после выполнения приоритетного сокращения/проверки"
-                    if risk_reduction_first
+                    "последовательная ребалансировка: сначала сокращение кредитного "
+                    "риска, затем покупки отобранных выпусков"
+                    if risk_reduction_first and invested > 0
                     else (
-                        "распределяет деньги только в выпуски без критических или "
-                        "предупреждающих кредитных сигналов и не превышает лимит эмитента"
+                        "снижает кредитный риск без немедленной замены слабых выпусков"
+                        if risk_reduction_first
+                        else (
+                            "распределяет деньги только в выпуски без критических или "
+                            "предупреждающих кредитных сигналов и не превышает лимит эмитента"
+                        )
                     )
                 ),
             ),
@@ -565,10 +772,13 @@ class PortfolioManager:
                 code="REBALANCE_TO_BOND_TARGET",
                 recommended=False,
                 invested_cash_rub=min(audit.cash_rub, audit.bond_target_gap_rub),
+                estimated_sale_proceeds_rub=Decimal("0"),
                 remaining_cash_rub=max(
                     Decimal("0"),
                     audit.cash_rub - audit.bond_target_gap_rub,
                 ),
+                net_bond_change_rub=min(audit.cash_rub, audit.bond_target_gap_rub)
+                + stock_sales,
                 projected_bond_share_managed=self._investment_policy.target_bond_share,
                 comparable_bond_yield_percent=None,
                 required_stock_sales_rub=stock_sales,
@@ -617,19 +827,26 @@ def render_manager_report_text(report: PortfolioManagerReport) -> str:
         lines.append(
             f"- {candidate.ticker} · {candidate.emitter_name} · доходность "
             f"{candidate.comparable_yield_percent:.2f}% · рейтинг "
-            f"{candidate.broad_rating_band.value}"
+            f"{candidate.broad_rating_band.value} · уровень листинга "
+            f"{candidate.list_level}"
         )
         if candidate.recommended_add_rub > 0:
+            availability = (
+                "доступность в БКС подтверждена; точные лоты зависят от свежей котировки"
+                if candidate.bcs_availability_verified
+                else "доступность и лоты в БКС ещё не подтверждены"
+            )
             lines.append(
                 f"  ориентир распределения {candidate.recommended_add_rub:,.0f} ₽; "
-                "доступность и лоты в БКС ещё не подтверждены"
+                f"{availability}"
             )
     lines.extend(["", "Сценарии:"])
     for scenario in report.scenarios:
         marker = "РЕКОМЕНДОВАН" if scenario.recommended else "АЛЬТЕРНАТИВА"
         lines.append(
             f"- {marker} {scenario.code}: вложить {scenario.invested_cash_rub:,.0f} ₽; "
-            f"остаток {scenario.remaining_cash_rub:,.0f} ₽; "
+            f"ожидаемые продажи {scenario.estimated_sale_proceeds_rub:,.0f} ₽; "
+            f"остаток денег {scenario.remaining_cash_rub:,.0f} ₽; "
             f"доля облигаций {scenario.projected_bond_share_managed:.2%}"
         )
         lines.append(f"  {scenario.explanation}")
@@ -707,6 +924,7 @@ def _new_candidate_decisions(
             bcs_availability_verified=False,
             moex_security_url=candidate.moex_security_url,
             moex_market_url=candidate.moex_market_url,
+            list_level=candidate.list_level,
         )
         for candidate in universe.candidates
     ]
@@ -773,6 +991,13 @@ def _yield_after_allocations(
     numerator = Decimal("0") if current is None else current * covered_value
     allocated = Decimal("0")
     for decision in decisions:
+        if (
+            decision.recommended_reduce_rub > 0
+            and decision.comparable_yield_percent is not None
+        ):
+            reduction = min(decision.recommended_reduce_rub, decision.market_value_rub)
+            numerator -= reduction * decision.comparable_yield_percent
+            covered_value -= reduction
         if decision.recommended_add_rub <= 0 or decision.comparable_yield_percent is None:
             continue
         numerator += decision.recommended_add_rub * decision.comparable_yield_percent
@@ -786,12 +1011,30 @@ def _yield_after_allocations(
     return None if denominator == 0 else numerator / denominator
 
 
-def _primary_action(decisions: list[BondManagerDecision]) -> str:
+def _planned_sale_proceeds(decisions: list[BondManagerDecision]) -> Decimal:
+    return sum(
+        (decision.recommended_reduce_rub for decision in decisions),
+        Decimal("0"),
+    )
+
+
+def _primary_action(
+    decisions: list[BondManagerDecision],
+    new_candidates: list[NewBondManagerDecision],
+) -> str:
     if any(decision.action is ManagerAction.URGENT_REVIEW for decision in decisions):
         return "VERIFY_CRITICAL_FLAG_BEFORE_NEW_RISK"
-    if any(decision.action is ManagerAction.REDUCE_RISK for decision in decisions):
+    has_reduction = any(
+        decision.action is ManagerAction.REDUCE_RISK for decision in decisions
+    )
+    has_purchase = any(
+        decision.recommended_add_rub > 0 for decision in decisions
+    ) or any(candidate.recommended_add_rub > 0 for candidate in new_candidates)
+    if has_reduction and has_purchase:
+        return "REBALANCE_CREDIT_RISK_AND_INVEST_CASH"
+    if has_reduction:
         return "REDUCE_CREDIT_RISK_BEFORE_NEW_RISK"
-    if any(decision.recommended_add_rub > 0 for decision in decisions):
+    if has_purchase:
         return "INVEST_CASH_SELECTIVELY"
     return "HOLD_CASH_AND_SCAN_MARKET"
 
@@ -825,6 +1068,7 @@ def _decision_as_dict(decision: BondManagerDecision) -> dict[str, Any]:
         "duration_days": _optional_decimal_text(decision.duration_days),
         "recommended_add_rub": _decimal_text(decision.recommended_add_rub),
         "recommended_reduce_rub": _decimal_text(decision.recommended_reduce_rub),
+        "credit_warning": decision.credit_warning,
         "reasons": list(decision.reasons),
         "exit_triggers": list(decision.exit_triggers),
     }
@@ -850,6 +1094,7 @@ def _new_candidate_as_dict(candidate: NewBondManagerDecision) -> dict[str, Any]:
             candidate.reference_buy_price_percent
         ),
         "turnover_today_rub": _decimal_text(candidate.turnover_today_rub),
+        "list_level": candidate.list_level,
         "ranking_score": _decimal_text(candidate.ranking_score),
         "recommended_add_rub": _decimal_text(candidate.recommended_add_rub),
         "reasons": list(candidate.reasons),
@@ -866,7 +1111,11 @@ def _scenario_as_dict(scenario: ManagerScenario) -> dict[str, Any]:
         "code": scenario.code,
         "recommended": scenario.recommended,
         "invested_cash_rub": _decimal_text(scenario.invested_cash_rub),
+        "estimated_sale_proceeds_rub": _decimal_text(
+            scenario.estimated_sale_proceeds_rub
+        ),
         "remaining_cash_rub": _decimal_text(scenario.remaining_cash_rub),
+        "net_bond_change_rub": _decimal_text(scenario.net_bond_change_rub),
         "projected_bond_share_managed": _decimal_text(
             scenario.projected_bond_share_managed
         ),
@@ -880,8 +1129,8 @@ def _scenario_as_dict(scenario: ManagerScenario) -> dict[str, Any]:
 
 def _fraction(value: Any, field: str) -> Decimal:
     result = Decimal(str(value))
-    if not result.is_finite() or not Decimal("0") < result < Decimal("1"):
-        raise ValueError(f"{field} must be between zero and one")
+    if not result.is_finite() or not Decimal("0") < result <= Decimal("1"):
+        raise ValueError(f"{field} must be in (0, 1]")
     return result
 
 
@@ -898,8 +1147,28 @@ def _positive_int(value: Any, field: str) -> int:
     return value
 
 
+def _rating_band(value: Any, field: str) -> RatingBand:
+    try:
+        band = RatingBand(str(value).strip().upper())
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field} must be a supported rating band") from error
+    if band not in {
+        RatingBand.HIGHEST,
+        RatingBand.HIGH,
+        RatingBand.STRONG,
+        RatingBand.ADEQUATE,
+    }:
+        raise ValueError(f"{field} must be investment grade")
+    return band
+
+
 def _round_down(value: Decimal, step: Decimal) -> Decimal:
     return (value / step).to_integral_value(rounding=ROUND_FLOOR) * step
+
+
+def _round_up(value: Decimal, step: Decimal) -> Decimal:
+    rounded_down = _round_down(value, step)
+    return rounded_down if rounded_down == value else rounded_down + step
 
 
 def _share(value: Decimal, denominator: Decimal) -> Decimal:

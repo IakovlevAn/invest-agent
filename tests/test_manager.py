@@ -347,7 +347,13 @@ class PortfolioManagerTests(unittest.TestCase):
 
         self.assertEqual(decisions["RU000A000002"].action, ManagerAction.URGENT_REVIEW)
         self.assertEqual(decisions["RU000A000003"].action, ManagerAction.REDUCE_RISK)
-        self.assertEqual(decisions["RU000A000003"].recommended_reduce_rub, Decimal("10000"))
+        speculative_reduction = decisions["RU000A000003"].recommended_reduce_rub
+        self.assertGreaterEqual(speculative_reduction, Decimal("10000"))
+        post_sale_sleeve = bonds.bond_value_rub - speculative_reduction
+        self.assertLessEqual(
+            Decimal("20000") - speculative_reduction,
+            post_sale_sleeve * Decimal("0.15"),
+        )
         scenario = next(item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH")
         self.assertFalse(scenario.recommended)
         self.assertEqual(report.primary_action, "VERIFY_CRITICAL_FLAG_BEFORE_NEW_RISK")
@@ -414,8 +420,41 @@ class PortfolioManagerTests(unittest.TestCase):
         scenario = next(item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH")
 
         self.assertGreater(scenario.invested_cash_rub, Decimal("0"))
-        self.assertFalse(scenario.recommended)
-        self.assertEqual(report.primary_action, "REDUCE_CREDIT_RISK_BEFORE_NEW_RISK")
+        self.assertTrue(scenario.recommended)
+        self.assertEqual(
+            report.primary_action,
+            "REBALANCE_CREDIT_RISK_AND_INVEST_CASH",
+        )
+
+    def test_rebalance_scenario_includes_sale_proceeds_and_net_bond_change(self) -> None:
+        speculative = bond("RU000A000001", emitter_id=1, value="20000", yield_percent="28")
+        stabilizer = bond("RU000A000002", emitter_id=2, value="80000", yield_percent="18")
+        audit, bonds, credit = inputs(
+            (speculative, stabilizer),
+            (
+                rating(
+                    "RU000A000001",
+                    emitter_id=1,
+                    band=RatingBand.SPECULATIVE,
+                    signal=CreditSignal(
+                        "SPECULATIVE_RATING",
+                        SignalSeverity.WARNING,
+                        "рейтинг BB или ниже",
+                    ),
+                ),
+                rating("RU000A000002", emitter_id=2, band=RatingBand.HIGHEST),
+            ),
+        )
+
+        report = self.manager().recommend(audit, bonds, credit)
+        scenario = next(item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH")
+
+        self.assertTrue(scenario.recommended)
+        self.assertEqual(scenario.invested_cash_rub, Decimal("0"))
+        self.assertEqual(scenario.estimated_sale_proceeds_rub, Decimal("10000"))
+        self.assertEqual(scenario.remaining_cash_rub, Decimal("60000"))
+        self.assertEqual(scenario.net_bond_change_rub, Decimal("-10000"))
+        self.assertEqual(scenario.projected_bond_share_managed, Decimal("0.6"))
 
     def test_warning_freezes_addition_and_output_never_creates_orders(self) -> None:
         record = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")
@@ -432,7 +471,8 @@ class PortfolioManagerTests(unittest.TestCase):
         report = self.manager().recommend(audit, bonds, credit)
         payload = json.loads(render_manager_report_json(report))
 
-        self.assertEqual(report.decisions[0].action, ManagerAction.DO_NOT_ADD)
+        self.assertEqual(report.decisions[0].action, ManagerAction.REDUCE_RISK)
+        self.assertGreater(report.decisions[0].recommended_reduce_rub, Decimal("0"))
         self.assertEqual(payload["trade_gate"]["state"], "RECOMMENDATION_ONLY")
         self.assertFalse(payload["trade_gate"]["orders_created"])
         self.assertTrue(payload["trade_gate"]["explicit_confirmation_required"])
@@ -491,6 +531,20 @@ class PortfolioManagerTests(unittest.TestCase):
         self.assertEqual(scenario.invested_cash_rub, Decimal("35200"))
         self.assertFalse(payload["trade_gate"]["orders_created"])
         self.assertFalse(payload["new_bond_candidates"][0]["bcs_availability_verified"])
+
+        filtered = self.manager().apply_bcs_buy_availability(
+            report,
+            audit,
+            bonds,
+            {"RU000A000003"},
+        )
+        self.assertEqual(len(filtered.new_bond_candidates), 1)
+        self.assertEqual(filtered.new_bond_candidates[0].isin, "RU000A000003")
+        self.assertEqual(
+            filtered.new_bond_candidates[0].recommended_add_rub,
+            Decimal("17600"),
+        )
+        self.assertTrue(filtered.new_bond_candidates[0].bcs_availability_verified)
 
     def test_rejects_cross_account_inputs(self) -> None:
         record = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")

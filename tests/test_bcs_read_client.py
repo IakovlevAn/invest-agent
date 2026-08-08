@@ -275,6 +275,48 @@ class BcsReadClientTests(unittest.TestCase):
         self.assertEqual(call["url"], INSTRUMENTS_BY_ISINS_URL)
         self.assertEqual(json.loads(call["body"]), {"isins": ["RU000A10TEST"]})
 
+    def test_prefers_unblocked_tqcb_contract_when_bcs_returns_duplicate_isin(self) -> None:
+        def record(*, ticker: str, board: str, blocked: bool) -> dict[str, object]:
+            return {
+                "ticker": ticker,
+                "isin": "RU000A10TEST",
+                "displayName": "Тест 001Р-01",
+                "instrumentType": "BONDS",
+                "boards": [{"classCode": board, "exchange": "MOEX"}],
+                "primaryBoard": board,
+                "tradingCurrency": "RUB",
+                "settlementCurrency": "RUB",
+                "faceValue": 1000,
+                "lotSize": 1,
+                "minimumStep": 0.01,
+                "accruedInt": 12.34,
+                "scale": 2,
+                "isBlocked": blocked,
+                "isQualifiedOnly": False,
+                "availableForUnqualified": True,
+                "couponTypeName": "Постоянный",
+            }
+
+        transport = FakeTransport(
+            [
+                json_response(
+                    200,
+                    [
+                        record(ticker="ALT.TEST", board="TQOB", blocked=False),
+                        record(ticker="RU000A10TEST", board="TQCB", blocked=False),
+                    ],
+                )
+            ]
+        )
+        client = BcsReadClient(transport=transport, now=lambda: NOW)
+        token = BcsAccessToken("access-secret", NOW + timedelta(hours=1))
+
+        instruments = client.fetch_instruments_by_isins(token, ("RU000A10TEST",))
+
+        self.assertEqual(len(instruments), 1)
+        self.assertEqual(instruments[0].ticker, "RU000A10TEST")
+        self.assertEqual(instruments[0].primary_board, "TQCB")
+
     def test_reads_quote_and_order_book_with_broker_status(self) -> None:
         transport = FakeTransport(
             [

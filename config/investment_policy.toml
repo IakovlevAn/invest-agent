@@ -54,10 +54,10 @@ near_term_event_days = 365
 [manager]
 # Fast recommendation hot path. These are allocation guards, not trade orders.
 max_bond_issuer_share_after_add = 0.15
-speculative_reduce_fraction = 0.50
+speculative_reduce_fraction = 1.00
 minimum_allocation_rub = 5000
 allocation_rounding_rub = 100
-maximum_single_purchase_share_of_cash = 0.40
+maximum_single_purchase_share_of_cash = 0.25
 
 [rate_model]
 # Transparent 12-month sensitivities. Scenario shifts are assumptions, not forecasts.
@@ -83,17 +83,20 @@ key_rate_change_percent = 1.0
 [universe]
 # Fast MOEX shortlist before exact proposal construction. Not an order universe.
 board_id = "TQCB"
-pre_credit_limit = 16
-result_limit = 5
-minimum_yield_percent = 20.0
-maximum_yield_percent = 30.0
+pre_credit_limit = 60
+result_limit = 8
+# Individual bonds may be defensive: the 20% objective applies to the portfolio,
+# not to every position separately.
+minimum_yield_percent = 16.0
+maximum_yield_percent = 35.0
 minimum_duration_days = 90
 maximum_duration_days = 1200
 minimum_days_to_maturity = 180
 minimum_issue_notional_rub = 1000000000
-minimum_turnover_rub = 500000
+minimum_turnover_rub = 250000
 maximum_lot_share_of_cash = 0.25
-maximum_list_level = 2
+maximum_list_level = 3
+third_level_minimum_rating_band = "STRONG"
 
 [trading]
 mode = "RECOMMEND_AND_CONFIRM"
