@@ -14,17 +14,18 @@ calculations and policy checks.
 1. Locate the repository root with `git rev-parse --show-toplevel`.
 2. Read `docs/INVESTMENT_MANDATE.md` and `config/investment_policy.toml` when the
    task could change allocation or lead to a transaction.
-3. Run `uv run invest-agent portfolio --format json` to obtain the current BCS
-   snapshot. Do not reconstruct holdings from conversation memory.
-4. If the read-only token is not configured, tell the user to run this one-time
-   command in their own local terminal:
+3. Run `uv run invest-agent portfolio --format json --token-file <path>` to
+   obtain the current BCS snapshot.
+   Do not reconstruct holdings from conversation memory.
+4. If the read-only token file is not configured, create a mode-600 temporary
+   file under `/private/tmp` and have the user paste the token into it using
+   their own local editor. Never read or print that file.
 
    ```bash
-   cd /Users/andrey-yakovl/Documents/ChatGPT/invest
-   uv run invest-agent token set
+   uv run invest-agent portfolio --format json --token-file /private/tmp/<private-file>
    ```
 
-   Explain that the hidden prompt keeps the token out of chat and Git. Resume
+   Explain that the temporary file keeps the token out of chat and Git. Resume
    after the user confirms setup. Never request the token value.
 
 ## Separate facts, models and judgment
@@ -74,4 +75,3 @@ limit orders; do not expose withdrawal, transfer, margin or derivative actions.
 For simple questions such as “что у меня в портфеле?” refresh the portfolio and
 answer directly. Do not add a recommendation unless the user asks for one or a
 critical risk requires attention.
-

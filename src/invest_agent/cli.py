@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import sys
+from pathlib import Path
 
 from invest_agent.brokers.bcs import BcsApiError, BcsReadClient
 from invest_agent.portfolio import (
@@ -15,8 +15,7 @@ from invest_agent.portfolio import (
 )
 from invest_agent.reader import PortfolioReader
 from invest_agent.secrets import (
-    MacOSKeychainRefreshTokenStore,
-    SecretNotFoundError,
+    EphemeralFileRefreshTokenStore,
     SecretStoreError,
 )
 
@@ -25,26 +24,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="invest-agent")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    token = commands.add_parser("token", help="Manage the read-only BCS token")
-    token_commands = token.add_subparsers(dest="token_command", required=True)
-    token_commands.add_parser("set", help="Store a token through a hidden local prompt")
-    token_commands.add_parser("status", help="Check whether a token is configured")
-
     portfolio = commands.add_parser("portfolio", help="Read and normalize the BCS portfolio")
     portfolio.add_argument("--format", choices=("text", "json"), default="text")
+    portfolio.add_argument(
+        "--token-file",
+        type=Path,
+        required=True,
+        help="Private mode-600 refresh-token file inside /private/tmp",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    store = MacOSKeychainRefreshTokenStore()
     try:
-        if args.command == "token":
-            return _token_command(args.token_command, store)
         if args.command == "portfolio":
             snapshot = PortfolioReader(
                 client=BcsReadClient(),
-                token_store=store,
+                token_store=EphemeralFileRefreshTokenStore(args.token_file),
                 normalizer=BcsPortfolioNormalizer(),
                 is_iis=True,
             ).refresh()
@@ -55,26 +52,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Ошибка: {error}", file=sys.stderr)
         return 2
     raise AssertionError("unreachable command")
-
-
-def _token_command(command: str, store: MacOSKeychainRefreshTokenStore) -> int:
-    if command == "set":
-        token = getpass.getpass("Вставьте read-only refresh-токен БКС: ")
-        try:
-            store.set(token)
-        finally:
-            token = ""
-        print("Read-only токен сохранён в macOS Keychain.")
-        return 0
-    if command == "status":
-        try:
-            store.get()
-        except SecretNotFoundError:
-            print("Read-only токен не настроен.")
-            return 1
-        print("Read-only токен настроен.")
-        return 0
-    raise AssertionError("unreachable token command")
 
 
 if __name__ == "__main__":

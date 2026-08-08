@@ -113,6 +113,15 @@ class BcsReadClientTests(unittest.TestCase):
         self.assertEqual(call["url"], PORTFOLIO_URL)
         self.assertEqual(call["headers"]["Authorization"], "Bearer access-secret")  # type: ignore[index]
 
+    def test_wraps_live_top_level_position_array(self) -> None:
+        transport = FakeTransport([json_response(200, [{"ticker": "TEST"}])])
+        client = BcsReadClient(transport=transport, now=lambda: NOW)
+        token = BcsAccessToken("access-secret", NOW + timedelta(hours=1))
+
+        result = client.fetch_raw_portfolio(token)
+
+        self.assertEqual(result, {"positions": [{"ticker": "TEST"}]})
+
     def test_retries_429_with_exponential_backoff(self) -> None:
         sleeps: list[float] = []
         transport = FakeTransport(
