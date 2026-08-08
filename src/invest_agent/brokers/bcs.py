@@ -6,6 +6,7 @@ This module deliberately contains no order endpoint and no trade-token client id
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.error
 import urllib.parse
@@ -15,11 +16,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-
-AUTH_URL = (
-    "https://be.broker.ru/trade-api-keycloak/realms/tradeapi/"
-    "protocol/openid-connect/token"
-)
+AUTH_URL = "https://be.broker.ru/trade-api-keycloak/realms/tradeapi/protocol/openid-connect/token"
 PORTFOLIO_URL = "https://be.broker.ru/trade-api-bff-portfolio/api/v1/portfolio"
 READ_ONLY_CLIENT_ID = "trade-api-read"
 
@@ -51,6 +48,25 @@ class BcsAccessToken:
         return (
             "BcsAccessToken(value=<redacted>, "
             f"expires_at={self.expires_at.isoformat()}, token_type={self.token_type!r})"
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class BcsTokenPair:
+    access_token: BcsAccessToken
+    refresh_token: str
+    refresh_expires_at: datetime
+
+    def __post_init__(self) -> None:
+        if not self.refresh_token:
+            raise ValueError("refresh token cannot be empty")
+        if self.refresh_expires_at.tzinfo is None or self.refresh_expires_at.utcoffset() is None:
+            raise ValueError("refresh_expires_at must be timezone-aware")
+
+    def __repr__(self) -> str:
+        return (
+            "BcsTokenPair(access_token=<redacted>, refresh_token=<redacted>, "
+            f"refresh_expires_at={self.refresh_expires_at.isoformat()})"
         )
 
 
@@ -119,7 +135,7 @@ class BcsReadClient:
         self._sleep = sleep
         self._max_attempts = max_attempts
 
-    def exchange_read_only_refresh_token(self, refresh_token: str) -> BcsAccessToken:
+    def exchange_read_only_refresh_token(self, refresh_token: str) -> BcsTokenPair:
         """Exchange a read-only refresh token for a short-lived access token."""
         if not refresh_token:
             raise ValueError("refresh_token cannot be empty")
@@ -143,17 +159,30 @@ class BcsReadClient:
         payload = self._json_object(response, operation="authorization")
         access_token = payload.get("access_token")
         expires_in = payload.get("expires_in")
+        rotated_refresh_token = payload.get("refresh_token")
+        refresh_expires_in = payload.get("refresh_expires_in")
         token_type = payload.get("token_type", "Bearer")
         if not isinstance(access_token, str) or not access_token:
             raise BcsApiError("authorization-contract", response.status)
-        if not isinstance(expires_in, (int, float)) or expires_in <= 0:
+        access_lifetime = self._positive_seconds(expires_in)
+        if access_lifetime is None:
+            raise BcsApiError("authorization-contract", response.status)
+        if not isinstance(rotated_refresh_token, str) or not rotated_refresh_token:
+            raise BcsApiError("authorization-contract", response.status)
+        refresh_lifetime = self._positive_seconds(refresh_expires_in)
+        if refresh_lifetime is None:
             raise BcsApiError("authorization-contract", response.status)
         if not isinstance(token_type, str):
             raise BcsApiError("authorization-contract", response.status)
-        return BcsAccessToken(
-            value=access_token,
-            expires_at=self._now() + timedelta(seconds=float(expires_in)),
-            token_type=token_type,
+        issued_at = self._now()
+        return BcsTokenPair(
+            access_token=BcsAccessToken(
+                value=access_token,
+                expires_at=issued_at + timedelta(seconds=access_lifetime),
+                token_type=token_type,
+            ),
+            refresh_token=rotated_refresh_token,
+            refresh_expires_at=issued_at + timedelta(seconds=refresh_lifetime),
         )
 
     def fetch_raw_portfolio(self, access_token: BcsAccessToken) -> Mapping[str, Any]:
@@ -217,3 +246,14 @@ class BcsReadClient:
             return payload["traceId"]
         return None
 
+    @staticmethod
+    def _positive_seconds(value: Any) -> float | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(seconds) or seconds <= 0:
+            return None
+        return seconds

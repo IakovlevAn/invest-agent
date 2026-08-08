@@ -59,6 +59,9 @@ class Position:
     market_value_rub: Decimal
     tradable: bool
     blocked_reason: str | None = None
+    display_name: str = ""
+    currency: str = "RUB"
+    locked_quantity: Decimal = Decimal("0")
 
     def __post_init__(self) -> None:
         if not self.instrument_uid.strip():
@@ -67,8 +70,16 @@ class Position:
             raise ValueError("quantity cannot be negative")
         if self.market_price < 0 or self.market_value_rub < 0:
             raise ValueError("market values cannot be negative")
+        if self.locked_quantity < 0:
+            raise ValueError("locked_quantity cannot be negative")
+        if self.locked_quantity > self.quantity:
+            raise ValueError("locked_quantity cannot exceed quantity")
         if not self.tradable and not self.blocked_reason:
             raise ValueError("blocked_reason is required for a non-tradable position")
+
+    @property
+    def available_quantity(self) -> Decimal:
+        return self.quantity - self.locked_quantity
 
     def canonical_payload(self) -> dict[str, Any]:
         return {
@@ -81,6 +92,9 @@ class Position:
             "market_value_rub": _decimal_text(self.market_value_rub),
             "tradable": self.tradable,
             "blocked_reason": self.blocked_reason,
+            "display_name": self.display_name,
+            "currency": self.currency,
+            "locked_quantity": _decimal_text(self.locked_quantity),
         }
 
 
@@ -133,7 +147,11 @@ class OrderIntent:
     blocked_reason: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.instrument_uid.strip() or not self.ticker.strip() or not self.class_code.strip():
+        if (
+            not self.instrument_uid.strip()
+            or not self.ticker.strip()
+            or not self.class_code.strip()
+        ):
             raise ValueError("instrument identifiers are required")
         if self.lots <= 0:
             raise ValueError("lots must be positive")
@@ -220,4 +238,3 @@ class Approval:
             raise ValueError("approval identifiers are required")
         if not self.approved_by.strip():
             raise ValueError("approved_by is required")
-

@@ -9,7 +9,6 @@ from pathlib import Path
 from invest_agent.domain import InstrumentType, OrderIntent, OrderType, ProposalBundle, Side
 from invest_agent.policy import InvestmentPolicy, PolicyViolation
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -85,4 +84,3 @@ class InvestmentPolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

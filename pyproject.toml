@@ -12,6 +12,9 @@ license = { text = "Proprietary" }
 authors = [{ name = "Andrey Yakovlev" }]
 dependencies = []
 
+[project.scripts]
+invest-agent = "invest_agent.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -21,4 +24,3 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-

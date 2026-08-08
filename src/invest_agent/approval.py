@@ -32,4 +32,3 @@ def validate_approval(
         raise ApprovalViolation("approval predates the proposal")
     if proposal_digest in consumed_proposal_digests:
         raise ApprovalViolation("proposal approval has already been consumed")
-
