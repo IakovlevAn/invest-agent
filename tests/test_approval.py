@@ -29,6 +29,11 @@ def proposal() -> ProposalBundle:
         lots=5,
         limit_price=Decimal("100.10"),
         currency="RUB",
+        lot_size=1,
+        price_step=Decimal("0.01"),
+        estimated_cash_rub=Decimal("500.50"),
+        quote_observed_at=NOW - timedelta(seconds=10),
+        order_valid_until=NOW + timedelta(hours=6),
     )
     return ProposalBundle(
         proposal_id="proposal-approval-test",

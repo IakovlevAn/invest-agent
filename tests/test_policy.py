@@ -23,6 +23,11 @@ def bond_order(**overrides: object) -> OrderIntent:
         "lots": 10,
         "limit_price": Decimal("101.25"),
         "currency": "RUB",
+        "lot_size": 1,
+        "price_step": Decimal("0.01"),
+        "estimated_cash_rub": Decimal("1012.50"),
+        "quote_observed_at": datetime(2026, 8, 8, 11, 59, tzinfo=UTC),
+        "order_valid_until": datetime(2026, 8, 8, 18, 0, tzinfo=UTC),
     }
     values.update(overrides)
     return OrderIntent(**values)  # type: ignore[arg-type]

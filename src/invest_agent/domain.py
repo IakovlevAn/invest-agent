@@ -143,6 +143,11 @@ class OrderIntent:
     lots: int
     limit_price: Decimal | None
     currency: str
+    lot_size: int
+    price_step: Decimal
+    estimated_cash_rub: Decimal
+    quote_observed_at: datetime
+    order_valid_until: datetime
     tradable: bool = True
     blocked_reason: str | None = None
 
@@ -155,13 +160,29 @@ class OrderIntent:
             raise ValueError("instrument identifiers are required")
         if self.lots <= 0:
             raise ValueError("lots must be positive")
+        if self.lot_size <= 0:
+            raise ValueError("lot_size must be positive")
+        if self.price_step <= 0:
+            raise ValueError("price_step must be positive")
+        if self.estimated_cash_rub <= 0:
+            raise ValueError("estimated_cash_rub must be positive")
+        _require_aware(self.quote_observed_at, "quote_observed_at")
+        _require_aware(self.order_valid_until, "order_valid_until")
+        if self.order_valid_until <= self.quote_observed_at:
+            raise ValueError("order_valid_until must be later than the quote")
         if self.order_type is OrderType.LIMIT:
             if self.limit_price is None or self.limit_price <= 0:
                 raise ValueError("positive limit_price is required for a limit order")
+            if self.limit_price % self.price_step != 0:
+                raise ValueError("limit_price must align with price_step")
         elif self.limit_price is not None:
             raise ValueError("market order cannot have limit_price")
         if not self.tradable and not self.blocked_reason:
             raise ValueError("blocked_reason is required for a non-tradable instrument")
+
+    @property
+    def quantity_units(self) -> int:
+        return self.lots * self.lot_size
 
     def canonical_payload(self) -> dict[str, Any]:
         return {
@@ -172,8 +193,14 @@ class OrderIntent:
             "side": self.side.value,
             "order_type": self.order_type.value,
             "lots": self.lots,
+            "lot_size": self.lot_size,
+            "quantity_units": self.quantity_units,
             "limit_price": None if self.limit_price is None else _decimal_text(self.limit_price),
             "currency": self.currency,
+            "price_step": _decimal_text(self.price_step),
+            "estimated_cash_rub": _decimal_text(self.estimated_cash_rub),
+            "quote_observed_at": self.quote_observed_at.isoformat(),
+            "order_valid_until": self.order_valid_until.isoformat(),
             "tradable": self.tradable,
             "blocked_reason": self.blocked_reason,
         }
@@ -203,6 +230,10 @@ class ProposalBundle:
             raise ValueError("proposal must contain a rationale")
         if self.projected_stress_loss < 0:
             raise ValueError("projected_stress_loss cannot be negative")
+        if any(order.quote_observed_at > self.created_at for order in self.orders):
+            raise ValueError("proposal cannot predate its market quote")
+        if any(self.expires_at > order.order_valid_until for order in self.orders):
+            raise ValueError("proposal cannot outlive an order validity window")
 
     def canonical_payload(self) -> dict[str, Any]:
         return {

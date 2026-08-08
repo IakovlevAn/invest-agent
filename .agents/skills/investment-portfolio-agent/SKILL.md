@@ -21,7 +21,9 @@ Russian portfolio report or recommendation in the conversation.
 3. For an investment decision, run `uv run invest-agent recommend --format json`.
    This single hot-path command refreshes the BCS portfolio, deterministic audit,
    MOEX bond facts, the tradable bond universe and Bank of Russia rating evidence,
-   then compares no action, investing current cash and rebalancing. The local
+   verifies actionable issues in the BCS catalogue and quotes, adds official
+   key-rate scenarios for floaters and long bonds, then compares no action,
+   investing current cash and rebalancing. The local
    `.env` contains only
    `INVEST_AGENT_TOKEN_FILE`; the token
    itself is in the ignored mode-600 `.local/secrets/` file.
@@ -87,11 +89,27 @@ data quality and scenario sensitivity.
 
 The current MVP cannot send broker orders. Never pretend otherwise.
 
-When an executor is added, an analysis or recommendation still does not authorize
-a trade. Only a separate approval generated outside the analytical conversation
-and bound to the immutable proposal digest may unlock execution. Any change to
-instrument, side, lots, limit price or expiry requires a new approval. Use only
-limit orders; do not expose withdrawal, transfer, margin or derivative actions.
+An analysis or recommendation does not authorize a trade. If the user asks to
+prepare a specific recommended action, Codex may run the internal `proposal`
+command with one or more exact manager actions in one immutable package. It must
+show the user all of: ISIN, ticker, BCS board, side, lots,
+security units, limit price, price step, estimated RUB cash including accrued
+interest, quote observation time, client-side order validity, proposal expiry
+and the full 64-character SHA-256 digest.
+
+Confirmation is a separate Codex turn and is valid only when the user's message
+equals `ПОДТВЕРЖДАЮ ПАКЕТ <full digest>` exactly. Never infer it from “давай”,
+“ок”, “согласен”, or approval of the analysis. Run the internal `confirm` command
+only after that exact message. The resulting receipt is one-time and has state
+`APPROVED_AWAITING_ISOLATED_EXECUTOR`; explicitly tell the user that no BCS order
+was sent because the executor is absent.
+
+Any change to instrument, board, side, lots, limit price, quote time or validity
+requires a new package, digest and confirmation. Build exact packages only while
+BCS reports trading open and the quote/order book are fresh. Use only limit
+orders; do not expose withdrawal, transfer, margin or derivative actions. The
+client-side validity is not a native BCS time-in-force field; a future executor
+must cancel the remaining order by that deadline.
 
 ## Read-only questions
 

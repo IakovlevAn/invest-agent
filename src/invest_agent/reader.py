@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
-from invest_agent.brokers.bcs import BcsReadClient
+from dataclasses import dataclass
+
+from invest_agent.brokers.bcs import BcsAccessToken, BcsReadClient
 from invest_agent.domain import PortfolioSnapshot
 from invest_agent.portfolio import BcsPortfolioNormalizer
 from invest_agent.secrets import RefreshTokenStore
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PortfolioReadSession:
+    snapshot: PortfolioSnapshot
+    access_token: BcsAccessToken
+
+    def __repr__(self) -> str:
+        return (
+            "PortfolioReadSession(snapshot="
+            f"{self.snapshot.account_ref!r}, access_token=<redacted>)"
+        )
 
 
 class PortfolioReader:
@@ -23,10 +37,15 @@ class PortfolioReader:
         self._is_iis = is_iis
 
     def refresh(self) -> PortfolioSnapshot:
+        return self.refresh_session().snapshot
+
+    def refresh_session(self) -> PortfolioReadSession:
+        """Refresh once and retain the short-lived read token for broker market checks."""
         refresh_token = self._token_store.get()
         token_pair = self._client.exchange_read_only_refresh_token(refresh_token)
         # BCS returns a new refresh token. Persist it before the next API call so
         # a crash cannot silently leave the user with a stale credential.
         self._token_store.set(token_pair.refresh_token)
         raw_portfolio = self._client.fetch_raw_portfolio(token_pair.access_token)
-        return self._normalizer.normalize(raw_portfolio, is_iis=self._is_iis)
+        snapshot = self._normalizer.normalize(raw_portfolio, is_iis=self._is_iis)
+        return PortfolioReadSession(snapshot=snapshot, access_token=token_pair.access_token)
