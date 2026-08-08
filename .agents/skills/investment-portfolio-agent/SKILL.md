@@ -24,6 +24,10 @@ calculations and policy checks.
    refresh official MOEX issue, issuer, yield, duration and same-day liquidity
    facts. Then run `uv run invest-agent credit --format json` to refresh issuer
    and exact-issue rating actions from the official Bank of Russia repository.
+   Run `uv run invest-agent fundamentals --format json` for annual standalone
+   RAS statements from FNS GIR BO and the complete MOEX schedule of coupons,
+   amortizations and offers. Never treat standalone RAS as consolidated group
+   reporting; keep absent or access-restricted statements explicit.
    Treat public data as possibly delayed and use its timestamps. A broad rating
    band is a diagnostic mapping, not a PD estimate or a cross-agency score.
 4. If the read-only token file is not configured, create a mode-600 carrier
@@ -60,8 +64,9 @@ For “what should I buy/sell?”, “where should I invest 50,000 ₽?” or si
    concentration, the managed sleeve and missing data. Do not call position HHI
    issuer concentration; issuer aggregation requires enrichment.
 3. Run the bond enrichment for MOEX market facts and issuer aggregation, then
-   run the credit passports for CBR rating evidence, then refresh the remaining
-   disclosure and macro evidence from primary sources.
+   run the credit passports for CBR rating evidence, then refresh RAS and payment
+   schedule evidence with the fundamental passports. Refresh remaining IFRS,
+   covenants, security, group support and macro evidence from primary sources.
 4. Compare at least: no action, invest new cash, and rebalance when applicable.
 5. Apply deterministic policy checks before presenting a proposal.
 6. Give a concise Russian response with:

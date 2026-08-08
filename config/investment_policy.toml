@@ -42,6 +42,15 @@ material_blocked_share = 0.05
 # Freshness diagnostic only. A recent rating does not imply low default risk.
 rating_max_age_days = 400
 
+[fundamentals]
+# Diagnostic thresholds only. Standalone RAS is not consolidated group data.
+financial_max_age_days = 550
+revenue_decline_warning = 0.10
+interest_coverage_warning = 1.00
+current_ratio_warning = 1.00
+debt_to_equity_warning = 3.00
+near_term_event_days = 365
+
 [trading]
 mode = "RECOMMEND_AND_CONFIRM"
 allowed_instrument_types = ["BOND", "STOCK", "FUND"]

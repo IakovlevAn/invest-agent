@@ -116,6 +116,24 @@ class MoexIssClientTests(unittest.TestCase):
         with self.assertRaisesRegex(MoexContractError, r"boards.data\[0\]"):
             client.fetch_bond("RU000A10BS76")
 
+    def test_reads_paginated_bond_payment_schedule(self) -> None:
+        transport = FakeTransport(
+            [
+                response(200, fixture("moex_bondization_0.json")),
+                response(200, fixture("moex_bondization_2.json")),
+            ]
+        )
+        client = MoexIssClient(transport=transport, now=lambda: NOW)
+
+        schedule = client.fetch_bond_schedule("ru000a10bs76")
+
+        self.assertEqual(schedule.isin, "RU000A10BS76")
+        self.assertEqual(len(schedule.coupons), 3)
+        self.assertEqual(schedule.coupons[-1].coupon_date.isoformat(), "2026-11-01")
+        self.assertEqual(schedule.amortizations[0].value_percent, Decimal("100"))
+        self.assertEqual(schedule.offers[0].offer_type, "put")
+        self.assertIn("coupons.start=2", transport.calls[1]["url"])
+
 
 if __name__ == "__main__":
     unittest.main()

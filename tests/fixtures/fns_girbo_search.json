@@ -1,0 +1,20 @@
+{
+  "content": [
+    {
+      "id": 10703464,
+      "inn": "<strong>9717068640</strong>",
+      "shortName": "ООО \"ВУШ\"",
+      "ogrn": "1187746542180",
+      "statusCode": "ACTIVE",
+      "bfo": {
+        "period": "2025",
+        "actualBfoDate": "2026-04-30",
+        "gainSum": 10694433,
+        "bfoPeriodTypes": [12]
+      }
+    }
+  ],
+  "totalPages": 1,
+  "totalElements": 1,
+  "numberOfElements": 1
+}
