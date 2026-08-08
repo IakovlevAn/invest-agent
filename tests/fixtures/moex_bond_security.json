@@ -1,0 +1,38 @@
+{
+  "description": {
+    "columns": ["name", "value"],
+    "data": [
+      ["SECID", "RU000A10BS76"],
+      ["ISSUENAME", "биржевые облигации серии 001P-04"],
+      ["NAME", "ВУШ БО 001P-04"],
+      ["SHORTNAME", "iВУШ 1P4"],
+      ["REGNUMBER", "4B02-04-00075-L-001P"],
+      ["ISIN", "RU000A10BS76"],
+      ["ISSUEDATE", "2025-06-11"],
+      ["MATDATE", "2028-05-26"],
+      ["FACEUNIT", "SUR"],
+      ["HASDEFAULT", "0"],
+      ["HASTECHNICALDEFAULT", "0"],
+      ["LISTLEVEL", "2"],
+      ["ISSUESIZE", "5000000"],
+      ["FACEVALUE", "1000"],
+      ["ISQUALIFIEDINVESTORS", "0"],
+      ["COUPONFREQUENCY", "12"],
+      ["COUPONDATE", "2026-09-04"],
+      ["COUPONPERCENT", "20.25"],
+      ["COUPONVALUE", "16.64"],
+      ["OFFERDATE", null],
+      ["BOND_TYPE", "Фикс с известным купоном"],
+      ["BOND_SUBTYPE", "До погашения"],
+      ["GROUP", "stock_bonds"],
+      ["EMITTER_ID", "13592"]
+    ]
+  },
+  "boards": {
+    "columns": ["secid", "boardid", "market", "engine", "is_primary"],
+    "data": [
+      ["RU000A10BS76", "TQCB", "bonds", "stock", 1],
+      ["RU000A10BS76", "PSOB", "ndm", "stock", 0]
+    ]
+  }
+}

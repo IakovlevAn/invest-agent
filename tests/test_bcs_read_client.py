@@ -44,6 +44,32 @@ class FakeTransport:
         return self.responses.pop(0)
 
 
+class FlakyNetworkTransport(FakeTransport):
+    def __init__(self, failures: int, responses: list[HttpResponse]) -> None:
+        super().__init__(responses)
+        self.failures = failures
+
+    def request(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        body: bytes | None = None,
+        timeout_seconds: float = 15.0,
+    ) -> HttpResponse:
+        if self.failures > 0:
+            self.failures -= 1
+            raise OSError("synthetic TLS reset")
+        return super().request(
+            method=method,
+            url=url,
+            headers=headers,
+            body=body,
+            timeout_seconds=timeout_seconds,
+        )
+
+
 def json_response(status: int, payload: object) -> HttpResponse:
     return HttpResponse(status=status, body=json.dumps(payload).encode("utf-8"))
 
@@ -142,6 +168,40 @@ class BcsReadClientTests(unittest.TestCase):
         self.assertEqual(client.fetch_raw_portfolio(token), {"positions": []})
         self.assertEqual(sleeps, [0.25, 0.5])
         self.assertEqual(len(transport.calls), 3)
+
+    def test_retries_network_failures_without_exposing_cause(self) -> None:
+        sleeps: list[float] = []
+        transport = FlakyNetworkTransport(
+            failures=2,
+            responses=[json_response(200, {"positions": []})],
+        )
+        client = BcsReadClient(
+            transport=transport,
+            now=lambda: NOW,
+            sleep=sleeps.append,
+            max_attempts=3,
+        )
+        token = BcsAccessToken("access-secret", NOW + timedelta(hours=1))
+
+        self.assertEqual(client.fetch_raw_portfolio(token), {"positions": []})
+        self.assertEqual(sleeps, [0.25, 0.5])
+
+    def test_sanitizes_exhausted_network_failure(self) -> None:
+        transport = FlakyNetworkTransport(failures=3, responses=[])
+        client = BcsReadClient(
+            transport=transport,
+            now=lambda: NOW,
+            sleep=lambda _: None,
+            max_attempts=3,
+        )
+        token = BcsAccessToken("access-secret", NOW + timedelta(hours=1))
+
+        with self.assertRaises(BcsApiError) as context:
+            client.fetch_raw_portfolio(token)
+
+        self.assertIn("network error", str(context.exception))
+        self.assertNotIn("synthetic TLS reset", str(context.exception))
+        self.assertNotIn("access-secret", str(context.exception))
 
     def test_error_is_sanitized_and_keeps_trace_id(self) -> None:
         transport = FakeTransport(
