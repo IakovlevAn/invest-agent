@@ -33,6 +33,11 @@ dynamic_credit_risk_budget = true
 fundamental_review_required = true
 macro_scenarios_required = true
 
+[analytics]
+# Diagnostic signals only; these are not hard trading limits.
+position_concentration_warning_share = 0.20
+material_blocked_share = 0.05
+
 [trading]
 mode = "RECOMMEND_AND_CONFIRM"
 allowed_instrument_types = ["BOND", "STOCK", "FUND"]
