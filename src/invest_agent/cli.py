@@ -7,7 +7,13 @@ import sys
 from pathlib import Path
 
 from invest_agent.audit import PortfolioAuditor, render_audit_json, render_audit_text
+from invest_agent.bond_report import (
+    BondPortfolioEnricher,
+    render_bond_report_json,
+    render_bond_report_text,
+)
 from invest_agent.brokers.bcs import BcsApiError, BcsReadClient
+from invest_agent.market.moex import MoexIssClient
 from invest_agent.policy import InvestmentPolicy
 from invest_agent.portfolio import (
     BcsPortfolioNormalizer,
@@ -36,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     audit = commands.add_parser("audit", help="Run a deterministic point-in-time audit")
     _add_read_options(audit)
+
+    bonds = commands.add_parser("bonds", help="Enrich portfolio bonds with MOEX ISS data")
+    _add_read_options(bonds)
     return parser
 
 
@@ -51,7 +60,7 @@ def _add_read_options(command: argparse.ArgumentParser) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command in {"portfolio", "audit"}:
+        if args.command in {"portfolio", "audit", "bonds"}:
             token_file = args.token_file or _token_file_from_local_env(LOCAL_ENV_FILE)
             snapshot = PortfolioReader(
                 client=BcsReadClient(),
@@ -67,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
             audit = PortfolioAuditor(InvestmentPolicy.from_toml(POLICY_FILE)).audit(snapshot)
             renderer = render_audit_json if args.format == "json" else render_audit_text
             print(renderer(audit))
+            return 0
+        if args.command == "bonds":
+            report = BondPortfolioEnricher(MoexIssClient()).enrich(snapshot)
+            renderer = render_bond_report_json if args.format == "json" else render_bond_report_text
+            print(renderer(report))
             return 0
     except (BcsApiError, PortfolioContractError, SecretStoreError) as error:
         print(f"Ошибка: {error}", file=sys.stderr)

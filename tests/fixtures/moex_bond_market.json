@@ -1,0 +1,26 @@
+{
+  "marketdata": {
+    "columns": [
+      "SECID", "BOARDID", "BID", "OFFER", "LAST", "WAPRICE", "YIELD",
+      "YIELDATWAPRICE", "YIELDTOOFFER", "DURATION", "NUMTRADES", "VOLTODAY",
+      "VALTODAY_RUR", "TRADINGSTATUS", "UPDATETIME", "SYSTIME"
+    ],
+    "data": [[
+      "RU000A10BS76", "TQCB", 97.39, 97.58, 97.59, 97.51, 24.22,
+      24.29, null, 550, 211, 2639, 2573174, "T", "17:21:00",
+      "2026-08-08 17:36:00"
+    ]]
+  },
+  "marketdata_yields": {
+    "columns": [
+      "SECID", "BOARDID", "PRICE", "YIELDDATE", "YIELDDATETYPE",
+      "EFFECTIVEYIELD", "DURATION", "ZSPREADBP", "GSPREADBP", "WAPRICE",
+      "EFFECTIVEYIELDWAPRICE", "DURATIONWAPRICE", "TRADEMOMENT", "SYSTIME"
+    ],
+    "data": [[
+      "RU000A10BS76", "TQCB", 97.59, "2028-05-26", "MATDATE", 24.2164,
+      551, 1001, 1014, 97.51, 24.2836, 551, "2026-08-08 17:13:31",
+      "2026-08-08 17:28:00"
+    ]]
+  }
+}

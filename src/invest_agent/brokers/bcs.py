@@ -8,13 +8,13 @@ from __future__ import annotations
 import json
 import math
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import Any
+
+from invest_agent.http import HttpResponse, HttpTransport, UrllibTransport
 
 AUTH_URL = "https://be.broker.ru/trade-api-keycloak/realms/tradeapi/protocol/openid-connect/token"
 PORTFOLIO_URL = "https://be.broker.ru/trade-api-bff-portfolio/api/v1/portfolio"
@@ -24,12 +24,19 @@ READ_ONLY_CLIENT_ID = "trade-api-read"
 class BcsApiError(RuntimeError):
     """A sanitized BCS API error that never embeds tokens or response bodies."""
 
-    def __init__(self, operation: str, status: int, *, trace_id: str | None = None) -> None:
+    def __init__(
+        self,
+        operation: str,
+        status: int | None,
+        *,
+        trace_id: str | None = None,
+    ) -> None:
         self.operation = operation
         self.status = status
         self.trace_id = trace_id
         suffix = "" if trace_id is None else f" (trace_id={trace_id})"
-        super().__init__(f"BCS {operation} failed with HTTP {status}{suffix}")
+        status_text = "network error" if status is None else f"HTTP {status}"
+        super().__init__(f"BCS {operation} failed with {status_text}{suffix}")
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -68,53 +75,6 @@ class BcsTokenPair:
             "BcsTokenPair(access_token=<redacted>, refresh_token=<redacted>, "
             f"refresh_expires_at={self.refresh_expires_at.isoformat()})"
         )
-
-
-@dataclass(frozen=True, slots=True)
-class HttpResponse:
-    status: int
-    body: bytes
-    headers: Mapping[str, str] = field(default_factory=dict)
-
-
-class HttpTransport(Protocol):
-    def request(
-        self,
-        *,
-        method: str,
-        url: str,
-        headers: Mapping[str, str],
-        body: bytes | None = None,
-        timeout_seconds: float = 15.0,
-    ) -> HttpResponse: ...
-
-
-class UrllibTransport:
-    """Small stdlib transport; injected in tests to keep them offline."""
-
-    def request(
-        self,
-        *,
-        method: str,
-        url: str,
-        headers: Mapping[str, str],
-        body: bytes | None = None,
-        timeout_seconds: float = 15.0,
-    ) -> HttpResponse:
-        request = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
-        try:
-            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-                return HttpResponse(
-                    status=response.status,
-                    body=response.read(),
-                    headers=dict(response.headers.items()),
-                )
-        except urllib.error.HTTPError as error:
-            return HttpResponse(
-                status=error.code,
-                body=error.read(),
-                headers=dict(error.headers.items()),
-            )
 
 
 class BcsReadClient:
@@ -216,13 +176,19 @@ class BcsReadClient:
     ) -> HttpResponse:
         response: HttpResponse | None = None
         for attempt in range(self._max_attempts):
-            response = self._transport.request(
-                method=method,
-                url=url,
-                headers=headers,
-                body=body,
-            )
-            if response.status != 429:
+            try:
+                response = self._transport.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    body=body,
+                )
+            except OSError as error:
+                if attempt + 1 >= self._max_attempts:
+                    raise BcsApiError(operation, None) from error
+                self._sleep(0.25 * (2**attempt))
+                continue
+            if response.status != 429 and not 500 <= response.status < 600:
                 break
             if attempt + 1 < self._max_attempts:
                 self._sleep(0.25 * (2**attempt))
