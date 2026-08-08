@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.local/
 .venv/
 __pycache__/
 *.py[cod]
@@ -13,4 +14,3 @@ htmlcov/
 data/
 logs/
 *.sqlite3
-

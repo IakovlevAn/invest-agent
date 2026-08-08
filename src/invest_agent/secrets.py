@@ -1,4 +1,4 @@
-"""Ephemeral file storage for BCS refresh tokens."""
+"""Private file storage for BCS refresh tokens."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from typing import Protocol
 
 MAX_TOKEN_BYTES = 16 * 1024
 TEMP_ROOT = Path("/private/tmp").resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+LOCAL_SECRET_ROOT = (PROJECT_ROOT / ".local" / "secrets").resolve()
 
 
 class SecretStoreError(RuntimeError):
@@ -26,16 +28,22 @@ class RefreshTokenStore(Protocol):
     def set(self, token: str) -> None: ...
 
 
-class EphemeralFileRefreshTokenStore:
-    """Reads and atomically rotates a mode-600 token file under /private/tmp."""
+class PrivateFileRefreshTokenStore:
+    """Reads and atomically rotates a mode-600 token in an approved local directory."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        allowed_roots: tuple[Path, ...] = (TEMP_ROOT, LOCAL_SECRET_ROOT),
+    ) -> None:
         try:
             resolved = path.expanduser().resolve(strict=True)
         except OSError as error:
-            raise SecretNotFoundError("Временный файл с read-only токеном не найден") from error
-        if TEMP_ROOT not in resolved.parents:
-            raise SecretStoreError("Файл с токеном должен находиться внутри /private/tmp")
+            raise SecretNotFoundError("Локальный файл с read-only токеном не найден") from error
+        roots = tuple(root.expanduser().resolve() for root in allowed_roots)
+        if not any(root in resolved.parents for root in roots):
+            raise SecretStoreError("Файл с токеном находится вне разрешённого каталога")
         self.path = resolved
 
     def get(self) -> str:
@@ -43,17 +51,17 @@ class EphemeralFileRefreshTokenStore:
         try:
             descriptor = os.open(self.path, flags)
         except OSError as error:
-            raise SecretNotFoundError("Временный файл с read-only токеном не найден") from error
+            raise SecretNotFoundError("Локальный файл с read-only токеном не найден") from error
 
         try:
             metadata = os.fstat(descriptor)
             if not stat.S_ISREG(metadata.st_mode):
                 raise SecretStoreError("Файл с токеном должен быть обычным файлом")
             if stat.S_IMODE(metadata.st_mode) != 0o600:
-                raise SecretStoreError("Права временного файла с токеном должны быть 600")
+                raise SecretStoreError("Права локального файла с токеном должны быть 600")
             payload = os.read(descriptor, MAX_TOKEN_BYTES + 1)
         except OSError as error:
-            raise SecretStoreError("Не удалось прочитать временный файл с токеном") from error
+            raise SecretStoreError("Не удалось прочитать локальный файл с токеном") from error
         finally:
             os.close(descriptor)
 
@@ -67,7 +75,7 @@ class EphemeralFileRefreshTokenStore:
         token = text.rstrip("\r\n")
         suffix = text[len(token) :]
         if not token:
-            raise SecretStoreError("Временный файл с токеном пуст")
+            raise SecretStoreError("Локальный файл с токеном пуст")
         if any(character.isspace() for character in token):
             raise SecretStoreError("Токен содержит пробел или перенос строки внутри значения")
         if suffix not in ("", "\n", "\r\n"):
@@ -100,7 +108,7 @@ class EphemeralFileRefreshTokenStore:
             temporary_path = None
             self.path.chmod(0o600)
         except OSError as error:
-            raise SecretStoreError("Не удалось обновить временный файл с токеном") from error
+            raise SecretStoreError("Не удалось обновить локальный файл с токеном") from error
         finally:
             if descriptor >= 0:
                 os.close(descriptor)

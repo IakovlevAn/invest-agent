@@ -13,7 +13,7 @@ class CodexSkillContractTests(unittest.TestCase):
         cls.project_rules = (ROOT / "AGENTS.md").read_text()
 
     def test_live_portfolio_is_required_for_decisions(self) -> None:
-        self.assertIn("uv run invest-agent portfolio --format json --token-file <path>", self.skill)
+        self.assertIn("uv run invest-agent portfolio --format json", self.skill)
         self.assertIn("Do not reconstruct holdings from conversation memory", self.skill)
 
     def test_skill_keeps_token_out_of_chat(self) -> None:

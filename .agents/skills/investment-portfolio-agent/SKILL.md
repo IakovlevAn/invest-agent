@@ -14,18 +14,21 @@ calculations and policy checks.
 1. Locate the repository root with `git rev-parse --show-toplevel`.
 2. Read `docs/INVESTMENT_MANDATE.md` and `config/investment_policy.toml` when the
    task could change allocation or lead to a transaction.
-3. Run `uv run invest-agent portfolio --format json --token-file <path>` to
-   obtain the current BCS snapshot.
+3. Run `uv run invest-agent portfolio --format json` to obtain the current BCS
+   snapshot. The local `.env` contains only `INVEST_AGENT_TOKEN_FILE`; the token
+   itself is in the ignored mode-600 `.local/secrets/` file.
    Do not reconstruct holdings from conversation memory.
-4. If the read-only token file is not configured, create a mode-600 temporary
+4. If the read-only token file is not configured, create a mode-600 carrier
    file under `/private/tmp` and have the user paste the token into it using
-   their own local editor. Never read or print that file.
+   their own local editor. Never read or print that file. Move it without
+   reading to `.local/secrets/`, keep mode `600`, and write only its path to
+   the ignored local `.env`.
 
    ```bash
-   uv run invest-agent portfolio --format json --token-file /private/tmp/<private-file>
+   uv run invest-agent portfolio --format json
    ```
 
-   Explain that the temporary file keeps the token out of chat and Git. Resume
+   Explain that the private local file keeps the token out of chat and Git. Resume
    after the user confirms setup. Never request the token value.
 
 ## Separate facts, models and judgment
