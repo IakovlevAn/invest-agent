@@ -231,6 +231,32 @@ class BondCandidateScreenerTests(unittest.TestCase):
         self.assertEqual(report.detailed_count, 1)
         self.assertEqual(report.candidates, ())
 
+    def test_filters_coarse_universe_by_bcs_buy_availability_before_credit_work(self) -> None:
+        allowed = quote("RU000A000001")
+        unavailable = quote("RU000A000002")
+        requested: list[tuple[str, ...]] = []
+
+        def buy_availability(isins: tuple[str, ...]) -> set[str]:
+            requested.append(isins)
+            return {allowed.isin}
+
+        screener = BondCandidateScreener(
+            FakeMoex((allowed, unavailable)),  # type: ignore[arg-type]
+            FakeRatings(),
+            CreditAnalysisPolicy(rating_max_age_days=400),
+            policy(),
+            buy_availability=buy_availability,
+            now=lambda: NOW,
+        )
+
+        report = screener.screen(self.snapshot(), current_bonds())
+
+        self.assertEqual(requested, [(allowed.isin, unavailable.isin)])
+        self.assertEqual(report.coarse_eligible_count, 2)
+        self.assertEqual(report.detailed_count, 1)
+        self.assertEqual([candidate.isin for candidate in report.candidates], [allowed.isin])
+        self.assertEqual(dict(report.rejection_counts)["bcs_buy_unavailable"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

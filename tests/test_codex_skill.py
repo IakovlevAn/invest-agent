@@ -25,7 +25,7 @@ class CodexSkillContractTests(unittest.TestCase):
         self.assertIn("Never request the token value", self.skill)
         self.assertIn("Never ask the user to paste BCS tokens", self.project_rules)
 
-    def test_only_exact_approved_package_can_be_executed(self) -> None:
+    def test_only_exact_approved_order_list_can_be_executed(self) -> None:
         self.assertIn("exactly confirmed BCS limit", self.skill)
         self.assertIn("Never claim submission or execution without a BCS status", self.skill)
         self.assertIn("reconcile", self.skill)
@@ -33,7 +33,7 @@ class CodexSkillContractTests(unittest.TestCase):
 
     def test_skill_requires_exact_one_time_codex_confirmation(self) -> None:
         self.assertIn("The user does not type or copy the digest", self.skill)
-        self.assertIn("single active package", self.skill)
+        self.assertIn("single active proposal", self.skill)
         self.assertIn("--user-confirmation", self.skill)
         self.assertIn("APPROVED_AWAITING_ISOLATED_EXECUTOR", self.skill)
         self.assertIn("quote/order book are fresh", self.skill)

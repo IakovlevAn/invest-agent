@@ -288,7 +288,7 @@ class ExactPackageExecutorTests(unittest.TestCase):
             ).confirm_semantic(
                 proposal_digest=package.digest,
                 user_message=(
-                    "Подтверждаю выставление всего предложенного пакета заявок"
+                    "Подтверждаю выставление всех предложенных заявок"
                 ),
             )
         events: list[str] = []

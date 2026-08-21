@@ -47,6 +47,7 @@ class BondUniversePolicy:
     minimum_turnover_rub: Decimal
     maximum_lot_share_of_cash: Decimal
     maximum_list_level: int
+    third_level_minimum_rating_band: RatingBand = RatingBand.STRONG
 
     @classmethod
     def from_toml(cls, path: str | Path) -> BondUniversePolicy:
@@ -95,6 +96,10 @@ class BondUniversePolicy:
                 raw["maximum_list_level"],
                 "universe.maximum_list_level",
             ),
+            third_level_minimum_rating_band=_rating_band(
+                raw["third_level_minimum_rating_band"],
+                "universe.third_level_minimum_rating_band",
+            ),
         )
         if policy.result_limit > policy.pre_credit_limit:
             raise ValueError("universe.result_limit cannot exceed pre_credit_limit")
@@ -124,6 +129,7 @@ class BondUniverseCandidate:
     reasons: tuple[str, ...]
     moex_security_url: str
     moex_market_url: str
+    list_level: int = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,12 +154,14 @@ class BondCandidateScreener:
         credit_policy: CreditAnalysisPolicy,
         universe_policy: BondUniversePolicy,
         *,
+        buy_availability: Callable[[tuple[str, ...]], set[str]] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._moex = moex
         self._ratings = ratings
         self._credit_policy = credit_policy
         self._policy = universe_policy
+        self._buy_availability = buy_availability
         self._now = now or (lambda: datetime.now(tz=UTC))
 
     def screen(
@@ -176,11 +184,21 @@ class BondCandidateScreener:
                 as_of=fetched_at,
             )
         ]
-        coarse.sort(key=_coarse_sort_key)
-        shortlist = coarse[: self._policy.pre_credit_limit]
+        coarse_eligible_count = len(coarse)
+        rejection_counts: defaultdict[str, int] = defaultdict(int)
+        if self._buy_availability is not None and coarse:
+            available_isins = self._buy_availability(
+                tuple(dict.fromkeys(quote.isin for quote in coarse))
+            )
+            unavailable_count = sum(
+                quote.isin not in available_isins for quote in coarse
+            )
+            if unavailable_count:
+                rejection_counts["bcs_buy_unavailable"] += unavailable_count
+            coarse = [quote for quote in coarse if quote.isin in available_isins]
+        shortlist = _diversified_shortlist(coarse, self._policy.pre_credit_limit)
         records: list[EnrichedBondPosition] = []
         failures: list[str] = []
-        rejection_counts: defaultdict[str, int] = defaultdict(int)
         emitter_cache: dict[int, Any] = {}
         quote_by_ticker = {quote.secid: quote for quote in shortlist}
         for quote in shortlist:
@@ -239,12 +257,6 @@ class BondCandidateScreener:
             if passport is None or not passport.current_ratings:
                 rejection_counts["no_current_rating"] += 1
                 continue
-            if any(
-                signal.severity in {SignalSeverity.CRITICAL, SignalSeverity.WARNING}
-                for signal in passport.signals
-            ):
-                rejection_counts["credit_warning_or_critical"] += 1
-                continue
             band = _worst_band(passport.current_ratings)
             if band not in {
                 RatingBand.HIGHEST,
@@ -253,6 +265,34 @@ class BondCandidateScreener:
                 RatingBand.ADEQUATE,
             }:
                 rejection_counts["rating_below_BBB"] += 1
+                continue
+            blocking_signals = [
+                signal
+                for signal in passport.signals
+                if signal.severity is SignalSeverity.CRITICAL
+                or (
+                    signal.severity is SignalSeverity.WARNING
+                    and signal.code != "RATING_DOWNGRADE"
+                )
+            ]
+            if blocking_signals:
+                rejection_counts["blocking_credit_signal"] += 1
+                continue
+            downgrade_signals = [
+                signal
+                for signal in passport.signals
+                if signal.severity is SignalSeverity.WARNING
+                and signal.code == "RATING_DOWNGRADE"
+            ]
+            if downgrade_signals and _band_rank(band) > _band_rank(RatingBand.STRONG):
+                rejection_counts["downgrade_below_A"] += 1
+                continue
+            if (
+                record.moex.facts.list_level == 3
+                and _band_rank(band)
+                > _band_rank(self._policy.third_level_minimum_rating_band)
+            ):
+                rejection_counts["third_level_rating_below_A"] += 1
                 continue
             market = record.moex.market
             lot_cost = quote.estimated_lot_cost_rub
@@ -275,7 +315,19 @@ class BondCandidateScreener:
                 market.duration_days,
                 band,
                 current_share,
+                list_level=record.moex.facts.list_level,
+                has_stable_downgrade=bool(downgrade_signals),
             )
+            reasons = [
+                "текущий рейтинг не ниже широкого класса BBB",
+                "нет критических рейтинговых сигналов или негативного пересмотра",
+                "выпуск прошёл фильтры доходности, срока, размера и ликвидности",
+            ]
+            if downgrade_signals:
+                reasons.append(
+                    "есть прошлое понижение рейтинга, но текущий класс не ниже A "
+                    "и нет негативного/развивающегося прогноза"
+                )
             candidates.append(
                 BondUniverseCandidate(
                     ticker=record.position.ticker,
@@ -292,25 +344,30 @@ class BondCandidateScreener:
                     reference_buy_price_percent=price,
                     turnover_today_rub=turnover,
                     ranking_score=score,
-                    reasons=(
-                        "текущий рейтинг не ниже широкого класса BBB",
-                        "нет критических или предупреждающих рейтинговых сигналов",
-                        "выпуск прошёл фильтры доходности, срока, размера и ликвидности",
-                    ),
+                    reasons=tuple(reasons),
                     moex_security_url=record.moex.facts.source_url,
                     moex_market_url=market.source_url,
+                    list_level=record.moex.facts.list_level,
                 )
             )
         candidates.sort(key=lambda item: (-item.ranking_score, item.ticker))
+        unique_candidates: list[BondUniverseCandidate] = []
+        selected_emitters: set[int] = set()
+        for candidate in candidates:
+            if candidate.emitter_id in selected_emitters:
+                rejection_counts["duplicate_issuer"] += 1
+                continue
+            selected_emitters.add(candidate.emitter_id)
+            unique_candidates.append(candidate)
         return BondUniverseReport(
             account_ref=snapshot.account_ref,
             portfolio_as_of=snapshot.as_of,
             fetched_at=fetched_at,
             board_id=self._policy.board_id,
             scanned_count=len(quotes),
-            coarse_eligible_count=len(coarse),
+            coarse_eligible_count=coarse_eligible_count,
             detailed_count=len(records),
-            candidates=tuple(candidates[: self._policy.result_limit]),
+            candidates=tuple(unique_candidates[: self._policy.result_limit]),
             rejection_counts=tuple(sorted(rejection_counts.items())),
             failures=tuple(dict.fromkeys(failures)),
         )
@@ -442,6 +499,9 @@ def _ranking_score(
     duration_days: Decimal,
     band: RatingBand,
     existing_share: Decimal,
+    *,
+    list_level: int = 2,
+    has_stable_downgrade: bool = False,
 ) -> Decimal:
     rating_penalty = {
         RatingBand.HIGHEST: Decimal("0"),
@@ -451,13 +511,61 @@ def _ranking_score(
     }[band]
     duration_penalty = duration_days / Decimal("365") * Decimal("0.25")
     concentration_penalty = existing_share * Decimal("10")
-    return yield_percent - rating_penalty - duration_penalty - concentration_penalty
+    listing_penalty = {
+        1: Decimal("0"),
+        2: Decimal("0.30"),
+        3: Decimal("1.20"),
+    }.get(list_level, Decimal("2"))
+    downgrade_penalty = Decimal("1.50") if has_stable_downgrade else Decimal("0")
+    return (
+        yield_percent
+        - rating_penalty
+        - duration_penalty
+        - concentration_penalty
+        - listing_penalty
+        - downgrade_penalty
+    )
 
 
-def _coarse_sort_key(quote: MoexBondUniverseQuote) -> tuple[Decimal, Decimal, str]:
+def _coarse_sort_key(
+    quote: MoexBondUniverseQuote,
+) -> tuple[int, Decimal, Decimal, Decimal, str]:
     assert quote.effective_yield_percent is not None
     turnover = quote.turnover_today_rub or Decimal("0")
-    return (-quote.effective_yield_percent, -turnover, quote.secid)
+    duration = quote.duration_days or Decimal("999999")
+    return (
+        quote.list_level or 99,
+        -turnover,
+        -quote.effective_yield_percent,
+        duration,
+        quote.secid,
+    )
+
+
+def _diversified_shortlist(
+    quotes: list[MoexBondUniverseQuote],
+    limit: int,
+) -> list[MoexBondUniverseQuote]:
+    bands = (
+        [quote for quote in quotes if quote.effective_yield_percent < Decimal("20")],
+        [
+            quote
+            for quote in quotes
+            if Decimal("20") <= quote.effective_yield_percent < Decimal("24")
+        ],
+        [quote for quote in quotes if quote.effective_yield_percent >= Decimal("24")],
+    )
+    selected: list[MoexBondUniverseQuote] = []
+    quota = max(1, limit // len(bands))
+    for band in bands:
+        selected.extend(sorted(band, key=_coarse_sort_key)[:quota])
+    selected_ids = {quote.secid for quote in selected}
+    remaining = sorted(
+        (quote for quote in quotes if quote.secid not in selected_ids),
+        key=_coarse_sort_key,
+    )
+    selected.extend(remaining[: max(0, limit - len(selected))])
+    return selected[:limit]
 
 
 def _positive_int(value: Any, field: str) -> int:
@@ -471,6 +579,21 @@ def _positive_decimal(value: Any, field: str) -> Decimal:
     if not result.is_finite() or result <= 0:
         raise ValueError(f"{field} must be positive")
     return result
+
+
+def _rating_band(value: Any, field: str) -> RatingBand:
+    try:
+        band = RatingBand(str(value).strip().upper())
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field} must be a supported rating band") from error
+    if band not in {
+        RatingBand.HIGHEST,
+        RatingBand.HIGH,
+        RatingBand.STRONG,
+        RatingBand.ADEQUATE,
+    }:
+        raise ValueError(f"{field} must be investment grade")
+    return band
 
 
 def _fraction(value: Any, field: str) -> Decimal:

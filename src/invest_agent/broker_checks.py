@@ -71,6 +71,8 @@ class BcsTradeVerifier:
         self,
         report: PortfolioManagerReport,
         access_token: BcsAccessToken,
+        *,
+        include_unallocated_buys: bool = False,
     ) -> tuple[BcsTradeCheck, ...]:
         intents: list[tuple[str, str, Side, Decimal]] = []
         for decision in report.decisions:
@@ -85,7 +87,10 @@ class BcsTradeVerifier:
                 )
             if (
                 decision.action is ManagerAction.ADD_CANDIDATE
-                and decision.recommended_add_rub > 0
+                and (
+                    decision.recommended_add_rub > 0
+                    or include_unallocated_buys
+                )
             ):
                 intents.append(
                     (
@@ -96,13 +101,17 @@ class BcsTradeVerifier:
                     )
                 )
         for candidate in report.new_bond_candidates:
-            if candidate.recommended_add_rub > 0:
+            if candidate.recommended_add_rub > 0 or include_unallocated_buys:
                 intents.append(
                     (
                         candidate.isin,
                         candidate.ticker,
                         Side.BUY,
-                        candidate.recommended_add_rub,
+                        (
+                            candidate.recommended_add_rub
+                            if candidate.recommended_add_rub > 0
+                            else candidate.estimated_lot_cost_rub
+                        ),
                     )
                 )
         if not intents:

@@ -40,23 +40,39 @@ class ManagerAction(StrEnum):
 @dataclass(frozen=True, slots=True)
 class ManagerPolicy:
     max_bond_issuer_share_after_add: Decimal
-    speculative_reduce_fraction: Decimal
+    rating_stress_loss: tuple[tuple[RatingBand, Decimal], ...]
     minimum_allocation_rub: Decimal
     allocation_rounding_rub: Decimal
     maximum_single_purchase_share_of_cash: Decimal
+    minimum_cash_reserve_rub: Decimal = Decimal("0")
+    maximum_purchase_count: int = 8
+    maximum_list_level_for_add: int = 2
+    minimum_add_yield_percent: Decimal = Decimal("20")
+    maximum_add_yield_percent: Decimal = Decimal("30")
+    minimum_add_duration_days: Decimal = Decimal("90")
+    minimum_add_turnover_rub: Decimal = Decimal("0")
+    third_level_minimum_rating_band: RatingBand = RatingBand.STRONG
 
     @classmethod
     def from_toml(cls, path: str | Path) -> ManagerPolicy:
         with Path(path).open("rb") as source:
-            raw = tomllib.load(source)["manager"]
+            document = tomllib.load(source)
+        raw = document["manager"]
+        stress_loss = document["credit"]["stress_loss"]
         policy = cls(
             max_bond_issuer_share_after_add=_fraction(
                 raw["max_bond_issuer_share_after_add"],
                 "manager.max_bond_issuer_share_after_add",
             ),
-            speculative_reduce_fraction=_fraction(
-                raw["speculative_reduce_fraction"],
-                "manager.speculative_reduce_fraction",
+            rating_stress_loss=tuple(
+                (
+                    band,
+                    _fraction(
+                        stress_loss[band.value],
+                        f"credit.stress_loss.{band.value}",
+                    ),
+                )
+                for band in RatingBand
             ),
             minimum_allocation_rub=_positive_decimal(
                 raw["minimum_allocation_rub"],
@@ -70,8 +86,51 @@ class ManagerPolicy:
                 raw["maximum_single_purchase_share_of_cash"],
                 "manager.maximum_single_purchase_share_of_cash",
             ),
+            minimum_cash_reserve_rub=_positive_decimal(
+                raw["minimum_cash_reserve_rub"],
+                "manager.minimum_cash_reserve_rub",
+            ),
+            maximum_purchase_count=_positive_int(
+                raw["maximum_purchase_count"],
+                "manager.maximum_purchase_count",
+            ),
+            maximum_list_level_for_add=_positive_int(
+                document["universe"]["maximum_list_level"],
+                "universe.maximum_list_level",
+            ),
+            minimum_add_yield_percent=_positive_decimal(
+                document["universe"]["minimum_yield_percent"],
+                "universe.minimum_yield_percent",
+            ),
+            maximum_add_yield_percent=_positive_decimal(
+                document["universe"]["maximum_yield_percent"],
+                "universe.maximum_yield_percent",
+            ),
+            minimum_add_duration_days=_positive_decimal(
+                document["universe"]["minimum_duration_days"],
+                "universe.minimum_duration_days",
+            ),
+            minimum_add_turnover_rub=_positive_decimal(
+                document["universe"]["minimum_turnover_rub"],
+                "universe.minimum_turnover_rub",
+            ),
+            third_level_minimum_rating_band=_rating_band(
+                document["universe"]["third_level_minimum_rating_band"],
+                "universe.third_level_minimum_rating_band",
+            ),
         )
+        if policy.minimum_add_yield_percent >= policy.maximum_add_yield_percent:
+            raise ValueError("universe yield range is invalid")
         return policy
+
+    def stress_loss_fraction(self, band: RatingBand | None) -> Decimal:
+        effective_band = RatingBand.UNRATED if band is None else band
+        try:
+            return dict(self.rating_stress_loss)[effective_band]
+        except KeyError as error:
+            raise ValueError(
+                f"credit stress loss is missing for {effective_band.value}"
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,12 +143,23 @@ class BondManagerDecision:
     issuer_share_of_bonds: Decimal
     action: ManagerAction
     broad_rating_band: RatingBand | None
+    stress_loss_fraction: Decimal
     comparable_yield_percent: Decimal | None
     duration_days: Decimal | None
     recommended_add_rub: Decimal
     recommended_reduce_rub: Decimal
     reasons: tuple[str, ...]
     exit_triggers: tuple[str, ...]
+    credit_warning: bool = False
+
+    @property
+    def risk_return_score(self) -> Decimal | None:
+        if self.comparable_yield_percent is None:
+            return None
+        return _risk_return_score(
+            self.comparable_yield_percent,
+            self.stress_loss_fraction,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +171,7 @@ class NewBondManagerDecision:
     emitter_name: str
     current_issuer_share_of_bonds: Decimal
     broad_rating_band: RatingBand
+    stress_loss_fraction: Decimal
     comparable_yield_percent: Decimal
     duration_days: Decimal
     estimated_lot_cost_rub: Decimal
@@ -112,6 +183,14 @@ class NewBondManagerDecision:
     bcs_availability_verified: bool
     moex_security_url: str
     moex_market_url: str
+    list_level: int = 2
+
+    @property
+    def risk_return_score(self) -> Decimal:
+        return _risk_return_score(
+            self.comparable_yield_percent,
+            self.stress_loss_fraction,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +198,9 @@ class ManagerScenario:
     code: str
     recommended: bool
     invested_cash_rub: Decimal
+    estimated_sale_proceeds_rub: Decimal
     remaining_cash_rub: Decimal
+    net_bond_change_rub: Decimal
     projected_bond_share_managed: Decimal
     comparable_bond_yield_percent: Decimal | None
     required_stock_sales_rub: Decimal
@@ -205,8 +286,12 @@ class PortfolioManagerReport:
                 "MOEX yield is a market indication, not a guaranteed return",
                 "floaters without a rate scenario have no comparable expected yield",
                 "rating bands are diagnostic classes, not default probabilities",
+                "credit haircuts are configurable stress scenarios, not expected losses",
+                "issuer reductions are sized by drawdown and concentration "
+                "budgets, not fixed sell fractions",
                 "amounts are allocation targets, not executable orders or lot calculations",
                 "new candidates require BCS availability and exact lot-price verification",
+                "additions to existing bonds obey the configured maximum listing level",
                 "stocks remain unchanged until a separate superior-alternative case is proven",
             ],
             "trade_gate": {
@@ -251,12 +336,19 @@ class PortfolioManager:
             )
             for record in bonds.positions
         ]
-        new_candidates = _new_candidate_decisions(universe)
+        new_candidates = _new_candidate_decisions(universe, self._manager_policy)
+        decisions = self._apply_risk_adjusted_issuer_limits(
+            decisions,
+            bonds,
+            new_candidates,
+        )
+        planned_sale_proceeds = _planned_sale_proceeds(decisions)
         decisions, new_candidates = self._allocate_cash(
             decisions,
             new_candidates,
             bonds,
-            audit.cash_rub,
+            audit.cash_rub + planned_sale_proceeds,
+            audit.managed_value_rub,
         )
         current_yield, yield_coverage = _comparable_yield(bonds.positions)
         stressed_value = sum(
@@ -275,7 +367,7 @@ class PortfolioManager:
             new_candidates,
             current_yield=current_yield,
         )
-        primary_action = _primary_action(decisions)
+        primary_action = _primary_action(decisions, new_candidates)
         failures = tuple(
             sorted(
                 {
@@ -309,7 +401,7 @@ class PortfolioManager:
             new_bond_candidates=tuple(
                 sorted(
                     new_candidates,
-                    key=lambda item: (-item.ranking_score, item.ticker),
+                    key=lambda item: (-item.risk_return_score, item.ticker),
                 )
             ),
             scenarios=scenarios,
@@ -334,6 +426,75 @@ class PortfolioManager:
             ),
         )
 
+    def apply_bcs_buy_availability(
+        self,
+        report: PortfolioManagerReport,
+        audit: PortfolioAudit,
+        bonds: BondMarketReport,
+        available_buy_isins: set[str],
+    ) -> PortfolioManagerReport:
+        decisions = [
+            replace(
+                decision,
+                action=(
+                    ManagerAction.DO_NOT_ADD
+                    if decision.action is ManagerAction.ADD_CANDIDATE
+                    and decision.isin not in available_buy_isins
+                    else decision.action
+                ),
+                recommended_add_rub=Decimal("0"),
+                reasons=(
+                    tuple(
+                        dict.fromkeys(
+                            (
+                                *decision.reasons,
+                                "покупка выпуска недоступна в справочнике БКС",
+                            )
+                        )
+                    )
+                    if decision.action is ManagerAction.ADD_CANDIDATE
+                    and decision.isin not in available_buy_isins
+                    else decision.reasons
+                ),
+            )
+            for decision in report.decisions
+        ]
+        candidates = [
+            replace(
+                candidate,
+                recommended_add_rub=Decimal("0"),
+                bcs_availability_verified=candidate.isin in available_buy_isins,
+            )
+            for candidate in report.new_bond_candidates
+            if candidate.isin in available_buy_isins
+        ]
+        decisions, candidates = self._allocate_cash(
+            decisions,
+            candidates,
+            bonds,
+            report.cash_rub + _planned_sale_proceeds(decisions),
+            report.managed_value_rub,
+        )
+        scenarios = self._scenarios(
+            audit,
+            bonds,
+            decisions,
+            candidates,
+            current_yield=report.current_comparable_bond_yield_percent,
+        )
+        return replace(
+            report,
+            decisions=tuple(sorted(decisions, key=_decision_sort_key)),
+            new_bond_candidates=tuple(
+                sorted(
+                    candidates,
+                    key=lambda item: (-item.risk_return_score, item.ticker),
+                )
+            ),
+            scenarios=scenarios,
+            primary_action=_primary_action(decisions, candidates),
+        )
+
     def _decision(
         self,
         record: EnrichedBondPosition,
@@ -344,10 +505,11 @@ class PortfolioManager:
         comparable_yield = record.comparable_effective_yield_percent
         duration = None if market is None else market.duration_days
         reasons: list[str] = []
+        has_credit_warning = False
         exits = [
             "подтверждённый дефолт или пропуск платежа",
-            "понижение рейтинга в спекулятивную зону или отзыв всех рейтингов",
-            "новый негативный пересмотр при ухудшении рыночной ликвидности",
+            "дальнейшее понижение, негативный прогноз или отзыв рейтинга",
+            "одновременное подтверждённое ухудшение ликвидности и кредитных метрик",
         ]
         if credit is None:
             action = ManagerAction.DO_NOT_ADD
@@ -362,41 +524,71 @@ class PortfolioManager:
             warnings = [
                 signal for signal in credit.signals if signal.severity is SignalSeverity.WARNING
             ]
+            has_credit_warning = bool(warnings)
             speculative = any(signal.code == "SPECULATIVE_RATING" for signal in warnings)
             if critical:
                 action = ManagerAction.URGENT_REVIEW
                 reasons.extend(signal.message for signal in critical)
                 reasons.append("до проверки текущего статуса новые покупки запрещены")
             elif speculative:
-                action = ManagerAction.REDUCE_RISK
+                action = ManagerAction.DO_NOT_ADD
                 reasons.extend(signal.message for signal in warnings)
-                reasons.append("риск дефолта важнее высокой текущей доходности")
+                reasons.append(
+                    "размер позиции определяется её доходностью на единицу "
+                    "сценарного кредитного риска"
+                )
             elif warnings:
                 action = ManagerAction.DO_NOT_ADD
                 reasons.extend(signal.message for signal in warnings)
             elif not current or band is None or band is RatingBand.UNRATED:
                 action = ManagerAction.DO_NOT_ADD
                 reasons.append("нет поддержанного текущего рейтингового класса")
+            elif (
+                record.moex.facts.list_level is None
+                or record.moex.facts.list_level
+                > self._manager_policy.maximum_list_level_for_add
+            ):
+                action = ManagerAction.DO_NOT_ADD
+                reasons.append(
+                    "уровень листинга выпуска выше допуска для новых покупок"
+                )
+            elif (
+                record.moex.facts.list_level == 3
+                and _band_rank(band)
+                > _band_rank(self._manager_policy.third_level_minimum_rating_band)
+            ):
+                action = ManagerAction.DO_NOT_ADD
+                reasons.append(
+                    "для третьего уровня листинга кредитный рейтинг недостаточно высок"
+                )
             elif comparable_yield is None:
                 action = ManagerAction.HOLD
                 reasons.append("доходность флоатера требует отдельного сценария ставки")
-            elif comparable_yield >= self._investment_policy.target_annual_return * 100:
+            elif duration is None or duration < self._manager_policy.minimum_add_duration_days:
+                action = ManagerAction.DO_NOT_ADD
+                reasons.append("дюрация ниже допуска для новой покупки")
+            elif market is None or market.turnover_today_rub is None or (
+                market.turnover_today_rub < self._manager_policy.minimum_add_turnover_rub
+            ):
+                action = ManagerAction.DO_NOT_ADD
+                reasons.append("ликвидность выпуска ниже допуска для новой покупки")
+            elif (
+                self._manager_policy.minimum_add_yield_percent
+                <= comparable_yield
+                <= self._manager_policy.maximum_add_yield_percent
+            ):
                 action = ManagerAction.ADD_CANDIDATE
-                reasons.append("рыночная эффективная доходность не ниже тактической цели")
+                reasons.append(
+                    "доходность входит в допустимый диапазон портфельной стратегии"
+                )
                 reasons.append("текущий рейтинг не находится в спекулятивной зоне")
             else:
                 action = ManagerAction.HOLD
                 reasons.append("доходность ниже тактической цели, но позиция может снижать риск")
 
-        reduction = Decimal("0")
-        if action is ManagerAction.REDUCE_RISK:
-            reduction = _round_down(
-                record.position.market_value_rub
-                * self._manager_policy.speculative_reduce_fraction,
-                self._manager_policy.allocation_rounding_rub,
-            )
         if action is ManagerAction.URGENT_REVIEW:
             exits.insert(0, "подтверждение, что технический/default-флаг MOEX актуален")
+        stress_loss_fraction = self._manager_policy.stress_loss_fraction(band)
         return BondManagerDecision(
             ticker=record.position.ticker,
             isin=record.moex.facts.isin,
@@ -410,13 +602,128 @@ class PortfolioManager:
             issuer_share_of_bonds=issuer_share,
             action=action,
             broad_rating_band=band,
+            stress_loss_fraction=stress_loss_fraction,
             comparable_yield_percent=comparable_yield,
             duration_days=duration,
             recommended_add_rub=Decimal("0"),
-            recommended_reduce_rub=reduction,
+            recommended_reduce_rub=Decimal("0"),
             reasons=tuple(dict.fromkeys(reasons)),
             exit_triggers=tuple(exits),
+            credit_warning=has_credit_warning,
         )
+
+    def _apply_risk_adjusted_issuer_limits(
+        self,
+        decisions: list[BondManagerDecision],
+        bonds: BondMarketReport,
+        new_candidates: list[NewBondManagerDecision],
+    ) -> list[BondManagerDecision]:
+        updated = list(decisions)
+        maximum_issuer_value = (
+            bonds.bond_value_rub
+            * self._manager_policy.max_bond_issuer_share_after_add
+        )
+        issuer_stress_budget = (
+            maximum_issuer_value * self._investment_policy.maximum_drawdown
+        )
+        replacement_score = max(
+            (candidate.risk_return_score for candidate in new_candidates),
+            default=None,
+        )
+        emitter_ids = sorted({decision.emitter_id for decision in decisions})
+        for emitter_id in emitter_ids:
+            issuer_indexes = [
+                index
+                for index, decision in enumerate(updated)
+                if decision.emitter_id == emitter_id
+                and decision.action is not ManagerAction.URGENT_REVIEW
+            ]
+            indexes = [
+                index
+                for index in issuer_indexes
+                if updated[index].credit_warning
+            ]
+            if not indexes:
+                continue
+            issuer_value = sum(
+                (updated[index].market_value_rub for index in issuer_indexes),
+                Decimal("0"),
+            )
+            issuer_stress_loss = sum(
+                (
+                    updated[index].market_value_rub
+                    * updated[index].stress_loss_fraction
+                    for index in issuer_indexes
+                ),
+                Decimal("0"),
+            )
+            concentration_remaining = max(
+                Decimal("0"), issuer_value - maximum_issuer_value
+            )
+            stress_remaining = max(
+                Decimal("0"), issuer_stress_loss - issuer_stress_budget
+            )
+            if concentration_remaining <= 0 and stress_remaining <= 0:
+                continue
+            indexes.sort(
+                key=lambda index: (
+                    updated[index].risk_return_score is not None,
+                    updated[index].risk_return_score or Decimal("0"),
+                    -updated[index].stress_loss_fraction,
+                )
+            )
+            for index in indexes:
+                if concentration_remaining <= 0 and stress_remaining <= 0:
+                    break
+                decision = updated[index]
+                stress_driven = (
+                    Decimal("0")
+                    if decision.stress_loss_fraction <= 0
+                    else stress_remaining / decision.stress_loss_fraction
+                )
+                reduction = min(
+                    decision.market_value_rub,
+                    _round_up(
+                        max(concentration_remaining, stress_driven),
+                        self._manager_policy.allocation_rounding_rub,
+                    ),
+                )
+                if reduction < self._manager_policy.minimum_allocation_rub:
+                    continue
+                reasons = list(decision.reasons)
+                if concentration_remaining > 0:
+                    reasons.append(
+                        "доля эмитента превышает портфельный лимит "
+                        f"{self._manager_policy.max_bond_issuer_share_after_add:.0%}"
+                    )
+                if stress_remaining > 0:
+                    reasons.append(
+                        "сценарный убыток эмитента превышает выделенный ему "
+                        "бюджет стресс-риска"
+                    )
+                if (
+                    decision.risk_return_score is not None
+                    and replacement_score is not None
+                ):
+                    reasons.append(
+                        "доходность/стресс текущего выпуска "
+                        f"{decision.risk_return_score:.2f}; лучшая отобранная "
+                        f"альтернатива {replacement_score:.2f}"
+                    )
+                updated[index] = replace(
+                    decision,
+                    action=ManagerAction.REDUCE_RISK,
+                    recommended_reduce_rub=reduction,
+                    reasons=tuple(dict.fromkeys(reasons)),
+                )
+                concentration_remaining = max(
+                    Decimal("0"), concentration_remaining - reduction
+                )
+                stress_remaining = max(
+                    Decimal("0"),
+                    stress_remaining - reduction * decision.stress_loss_fraction,
+                )
+        return updated
 
     def _allocate_cash(
         self,
@@ -424,20 +731,24 @@ class PortfolioManager:
         new_candidates: list[NewBondManagerDecision],
         bonds: BondMarketReport,
         cash_rub: Decimal,
+        managed_value_rub: Decimal,
     ) -> tuple[list[BondManagerDecision], list[NewBondManagerDecision]]:
-        remaining = cash_rub
+        remaining = max(
+            Decimal("0"),
+            cash_rub - self._manager_policy.minimum_cash_reserve_rub,
+        )
         updated_existing = list(decisions)
         updated_new = list(new_candidates)
         candidates: list[
             tuple[Decimal, str, BondManagerDecision | NewBondManagerDecision]
         ] = [
-            (_risk_adjusted_yield(decision), "EXISTING", decision)
+            (decision.comparable_yield_percent, "EXISTING", decision)
             for decision in decisions
             if decision.action is ManagerAction.ADD_CANDIDATE
             and decision.comparable_yield_percent is not None
         ]
         candidates.extend(
-            (candidate.ranking_score, "NEW", candidate)
+            (candidate.comparable_yield_percent, "NEW", candidate)
             for candidate in new_candidates
         )
         candidates.sort(
@@ -454,18 +765,42 @@ class PortfolioManager:
             for exposure in bonds.issuer_exposures
         }
         maximum_purchase = _round_down(
-            cash_rub * self._manager_policy.maximum_single_purchase_share_of_cash,
+            remaining * self._manager_policy.maximum_single_purchase_share_of_cash,
             self._manager_policy.allocation_rounding_rub,
         )
+        maximum_stress_loss = (
+            managed_value_rub * self._investment_policy.maximum_drawdown
+        )
+        projected_stress_loss = sum(
+            (
+                max(
+                    Decimal("0"),
+                    decision.market_value_rub - decision.recommended_reduce_rub,
+                )
+                * decision.stress_loss_fraction
+                for decision in decisions
+            ),
+            Decimal("0"),
+        )
+        allocated_count = 0
         for _, candidate_type, candidate in candidates:
             current_issuer_value = issuer_values.get(candidate.emitter_id, Decimal("0"))
+            risk_adjusted_share_limit = _risk_adjusted_issuer_share_limit(
+                self._manager_policy.max_bond_issuer_share_after_add,
+                self._investment_policy.maximum_drawdown,
+                candidate.stress_loss_fraction,
+            )
             capacity = _issuer_add_capacity(
                 current_value=current_issuer_value,
                 sleeve_value=bonds.bond_value_rub,
-                maximum_share=self._manager_policy.max_bond_issuer_share_after_add,
+                maximum_share=risk_adjusted_share_limit,
             )
+            stress_capacity = max(
+                Decimal("0"),
+                maximum_stress_loss - projected_stress_loss,
+            ) / candidate.stress_loss_fraction
             amount = _round_down(
-                min(remaining, capacity, maximum_purchase),
+                min(remaining, capacity, stress_capacity, maximum_purchase),
                 self._manager_policy.allocation_rounding_rub,
             )
             if amount < self._manager_policy.minimum_allocation_rub:
@@ -481,8 +816,13 @@ class PortfolioManager:
                 index = updated_new.index(new)
                 updated_new[index] = replace(new, recommended_add_rub=amount)
             issuer_values[candidate.emitter_id] = current_issuer_value + amount
+            projected_stress_loss += amount * candidate.stress_loss_fraction
             remaining -= amount
-            if remaining < self._manager_policy.minimum_allocation_rub:
+            allocated_count += 1
+            if (
+                remaining < self._manager_policy.minimum_allocation_rub
+                or allocated_count >= self._manager_policy.maximum_purchase_count
+            ):
                 break
         return updated_existing, updated_new
 
@@ -502,13 +842,15 @@ class PortfolioManager:
             (candidate.recommended_add_rub for candidate in new_candidates),
             Decimal("0"),
         )
+        sale_proceeds = _planned_sale_proceeds(decisions)
         invested_yield = _yield_after_allocations(
             bonds.positions,
             decisions,
             new_candidates,
         )
+        net_bond_change = invested - sale_proceeds
         projected_share = _share(
-            bonds.bond_value_rub + invested,
+            bonds.bond_value_rub + net_bond_change,
             audit.managed_value_rub,
         )
         stock_sales = max(Decimal("0"), audit.bond_target_gap_rub - audit.cash_rub)
@@ -521,7 +863,9 @@ class PortfolioManager:
                 code="NO_ACTION",
                 recommended=False,
                 invested_cash_rub=Decimal("0"),
+                estimated_sale_proceeds_rub=Decimal("0"),
                 remaining_cash_rub=audit.cash_rub,
+                net_bond_change_rub=Decimal("0"),
                 projected_bond_share_managed=audit.bond_share_managed,
                 comparable_bond_yield_percent=current_yield,
                 required_stock_sales_rub=Decimal("0"),
@@ -529,19 +873,29 @@ class PortfolioManager:
             ),
             ManagerScenario(
                 code="INVEST_CURRENT_CASH",
-                recommended=invested > 0 and not risk_reduction_first,
+                recommended=(invested > 0 or sale_proceeds > 0)
+                and not any(
+                    decision.action is ManagerAction.URGENT_REVIEW
+                    for decision in decisions
+                ),
                 invested_cash_rub=invested,
-                remaining_cash_rub=audit.cash_rub - invested,
+                estimated_sale_proceeds_rub=sale_proceeds,
+                remaining_cash_rub=audit.cash_rub + sale_proceeds - invested,
+                net_bond_change_rub=net_bond_change,
                 projected_bond_share_managed=projected_share,
                 comparable_bond_yield_percent=invested_yield,
                 required_stock_sales_rub=Decimal("0"),
                 explanation=(
-                    "кандидатное распределение рассчитано, но новый риск разрешён только "
-                    "после выполнения приоритетного сокращения/проверки"
-                    if risk_reduction_first
+                    "последовательная ребалансировка: сначала сокращение кредитного "
+                    "риска, затем покупки отобранных выпусков"
+                    if risk_reduction_first and invested > 0
                     else (
-                        "распределяет деньги только в выпуски без критических или "
-                        "предупреждающих кредитных сигналов и не превышает лимит эмитента"
+                        "снижает кредитный риск без немедленной замены слабых выпусков"
+                        if risk_reduction_first
+                        else (
+                            "распределяет деньги только в выпуски без критических или "
+                            "предупреждающих кредитных сигналов и не превышает лимит эмитента"
+                        )
                     )
                 ),
             ),
@@ -549,10 +903,13 @@ class PortfolioManager:
                 code="REBALANCE_TO_BOND_TARGET",
                 recommended=False,
                 invested_cash_rub=min(audit.cash_rub, audit.bond_target_gap_rub),
+                estimated_sale_proceeds_rub=Decimal("0"),
                 remaining_cash_rub=max(
                     Decimal("0"),
                     audit.cash_rub - audit.bond_target_gap_rub,
                 ),
+                net_bond_change_rub=min(audit.cash_rub, audit.bond_target_gap_rub)
+                + stock_sales,
                 projected_bond_share_managed=self._investment_policy.target_bond_share,
                 comparable_bond_yield_percent=None,
                 required_stock_sales_rub=stock_sales,
@@ -601,19 +958,26 @@ def render_manager_report_text(report: PortfolioManagerReport) -> str:
         lines.append(
             f"- {candidate.ticker} · {candidate.emitter_name} · доходность "
             f"{candidate.comparable_yield_percent:.2f}% · рейтинг "
-            f"{candidate.broad_rating_band.value}"
+            f"{candidate.broad_rating_band.value} · уровень листинга "
+            f"{candidate.list_level}"
         )
         if candidate.recommended_add_rub > 0:
+            availability = (
+                "доступность в БКС подтверждена; точные лоты зависят от свежей котировки"
+                if candidate.bcs_availability_verified
+                else "доступность и лоты в БКС ещё не подтверждены"
+            )
             lines.append(
                 f"  ориентир распределения {candidate.recommended_add_rub:,.0f} ₽; "
-                "доступность и лоты в БКС ещё не подтверждены"
+                f"{availability}"
             )
     lines.extend(["", "Сценарии:"])
     for scenario in report.scenarios:
         marker = "РЕКОМЕНДОВАН" if scenario.recommended else "АЛЬТЕРНАТИВА"
         lines.append(
             f"- {marker} {scenario.code}: вложить {scenario.invested_cash_rub:,.0f} ₽; "
-            f"остаток {scenario.remaining_cash_rub:,.0f} ₽; "
+            f"ожидаемые продажи {scenario.estimated_sale_proceeds_rub:,.0f} ₽; "
+            f"остаток денег {scenario.remaining_cash_rub:,.0f} ₽; "
             f"доля облигаций {scenario.projected_bond_share_managed:.2%}"
         )
         lines.append(f"  {scenario.explanation}")
@@ -666,6 +1030,7 @@ def _band_rank(band: RatingBand) -> int:
 
 def _new_candidate_decisions(
     universe: BondUniverseReport | None,
+    manager_policy: ManagerPolicy,
 ) -> list[NewBondManagerDecision]:
     if universe is None:
         return []
@@ -680,6 +1045,9 @@ def _new_candidate_decisions(
                 candidate.current_issuer_share_of_bonds
             ),
             broad_rating_band=candidate.broad_rating_band,
+            stress_loss_fraction=manager_policy.stress_loss_fraction(
+                candidate.broad_rating_band
+            ),
             comparable_yield_percent=candidate.effective_yield_percent,
             duration_days=candidate.duration_days,
             estimated_lot_cost_rub=candidate.estimated_lot_cost_rub,
@@ -691,19 +1059,32 @@ def _new_candidate_decisions(
             bcs_availability_verified=False,
             moex_security_url=candidate.moex_security_url,
             moex_market_url=candidate.moex_market_url,
+            list_level=candidate.list_level,
         )
         for candidate in universe.candidates
     ]
 
 
-def _risk_adjusted_yield(decision: BondManagerDecision) -> Decimal:
-    assert decision.comparable_yield_percent is not None
-    penalty = (
-        Decimal("4")
-        if decision.broad_rating_band is None
-        else Decimal(_band_rank(decision.broad_rating_band))
+def _risk_return_score(
+    comparable_yield_percent: Decimal,
+    stress_loss_fraction: Decimal,
+) -> Decimal:
+    if stress_loss_fraction <= 0:
+        raise ValueError("stress loss fraction must be positive")
+    return comparable_yield_percent / (stress_loss_fraction * Decimal("100"))
+
+
+def _risk_adjusted_issuer_share_limit(
+    concentration_limit: Decimal,
+    maximum_drawdown: Decimal,
+    stress_loss_fraction: Decimal,
+) -> Decimal:
+    if stress_loss_fraction <= 0:
+        raise ValueError("stress loss fraction must be positive")
+    return min(
+        concentration_limit,
+        concentration_limit * maximum_drawdown / stress_loss_fraction,
     )
-    return decision.comparable_yield_percent - penalty
 
 
 def _issuer_add_capacity(
@@ -757,6 +1138,13 @@ def _yield_after_allocations(
     numerator = Decimal("0") if current is None else current * covered_value
     allocated = Decimal("0")
     for decision in decisions:
+        if (
+            decision.recommended_reduce_rub > 0
+            and decision.comparable_yield_percent is not None
+        ):
+            reduction = min(decision.recommended_reduce_rub, decision.market_value_rub)
+            numerator -= reduction * decision.comparable_yield_percent
+            covered_value -= reduction
         if decision.recommended_add_rub <= 0 or decision.comparable_yield_percent is None:
             continue
         numerator += decision.recommended_add_rub * decision.comparable_yield_percent
@@ -770,12 +1158,30 @@ def _yield_after_allocations(
     return None if denominator == 0 else numerator / denominator
 
 
-def _primary_action(decisions: list[BondManagerDecision]) -> str:
+def _planned_sale_proceeds(decisions: list[BondManagerDecision]) -> Decimal:
+    return sum(
+        (decision.recommended_reduce_rub for decision in decisions),
+        Decimal("0"),
+    )
+
+
+def _primary_action(
+    decisions: list[BondManagerDecision],
+    new_candidates: list[NewBondManagerDecision],
+) -> str:
     if any(decision.action is ManagerAction.URGENT_REVIEW for decision in decisions):
         return "VERIFY_CRITICAL_FLAG_BEFORE_NEW_RISK"
-    if any(decision.action is ManagerAction.REDUCE_RISK for decision in decisions):
+    has_reduction = any(
+        decision.action is ManagerAction.REDUCE_RISK for decision in decisions
+    )
+    has_purchase = any(
+        decision.recommended_add_rub > 0 for decision in decisions
+    ) or any(candidate.recommended_add_rub > 0 for candidate in new_candidates)
+    if has_reduction and has_purchase:
+        return "REBALANCE_CREDIT_RISK_AND_INVEST_CASH"
+    if has_reduction:
         return "REDUCE_CREDIT_RISK_BEFORE_NEW_RISK"
-    if any(decision.recommended_add_rub > 0 for decision in decisions):
+    if has_purchase:
         return "INVEST_CASH_SELECTIVELY"
     return "HOLD_CASH_AND_SCAN_MARKET"
 
@@ -803,12 +1209,15 @@ def _decision_as_dict(decision: BondManagerDecision) -> dict[str, Any]:
         "broad_rating_band": (
             None if decision.broad_rating_band is None else decision.broad_rating_band.value
         ),
+        "stress_loss_fraction": _decimal_text(decision.stress_loss_fraction),
+        "risk_return_score": _optional_decimal_text(decision.risk_return_score),
         "comparable_yield_percent": _optional_decimal_text(
             decision.comparable_yield_percent
         ),
         "duration_days": _optional_decimal_text(decision.duration_days),
         "recommended_add_rub": _decimal_text(decision.recommended_add_rub),
         "recommended_reduce_rub": _decimal_text(decision.recommended_reduce_rub),
+        "credit_warning": decision.credit_warning,
         "reasons": list(decision.reasons),
         "exit_triggers": list(decision.exit_triggers),
     }
@@ -825,6 +1234,8 @@ def _new_candidate_as_dict(candidate: NewBondManagerDecision) -> dict[str, Any]:
             candidate.current_issuer_share_of_bonds
         ),
         "broad_rating_band": candidate.broad_rating_band.value,
+        "stress_loss_fraction": _decimal_text(candidate.stress_loss_fraction),
+        "risk_return_score": _decimal_text(candidate.risk_return_score),
         "comparable_yield_percent": _decimal_text(
             candidate.comparable_yield_percent
         ),
@@ -834,6 +1245,7 @@ def _new_candidate_as_dict(candidate: NewBondManagerDecision) -> dict[str, Any]:
             candidate.reference_buy_price_percent
         ),
         "turnover_today_rub": _decimal_text(candidate.turnover_today_rub),
+        "list_level": candidate.list_level,
         "ranking_score": _decimal_text(candidate.ranking_score),
         "recommended_add_rub": _decimal_text(candidate.recommended_add_rub),
         "reasons": list(candidate.reasons),
@@ -850,7 +1262,11 @@ def _scenario_as_dict(scenario: ManagerScenario) -> dict[str, Any]:
         "code": scenario.code,
         "recommended": scenario.recommended,
         "invested_cash_rub": _decimal_text(scenario.invested_cash_rub),
+        "estimated_sale_proceeds_rub": _decimal_text(
+            scenario.estimated_sale_proceeds_rub
+        ),
         "remaining_cash_rub": _decimal_text(scenario.remaining_cash_rub),
+        "net_bond_change_rub": _decimal_text(scenario.net_bond_change_rub),
         "projected_bond_share_managed": _decimal_text(
             scenario.projected_bond_share_managed
         ),
@@ -864,8 +1280,8 @@ def _scenario_as_dict(scenario: ManagerScenario) -> dict[str, Any]:
 
 def _fraction(value: Any, field: str) -> Decimal:
     result = Decimal(str(value))
-    if not result.is_finite() or not Decimal("0") < result < Decimal("1"):
-        raise ValueError(f"{field} must be between zero and one")
+    if not result.is_finite() or not Decimal("0") < result <= Decimal("1"):
+        raise ValueError(f"{field} must be in (0, 1]")
     return result
 
 
@@ -876,8 +1292,34 @@ def _positive_decimal(value: Any, field: str) -> Decimal:
     return result
 
 
+def _positive_int(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field} must be a positive integer")
+    return value
+
+
+def _rating_band(value: Any, field: str) -> RatingBand:
+    try:
+        band = RatingBand(str(value).strip().upper())
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field} must be a supported rating band") from error
+    if band not in {
+        RatingBand.HIGHEST,
+        RatingBand.HIGH,
+        RatingBand.STRONG,
+        RatingBand.ADEQUATE,
+    }:
+        raise ValueError(f"{field} must be investment grade")
+    return band
+
+
 def _round_down(value: Decimal, step: Decimal) -> Decimal:
     return (value / step).to_integral_value(rounding=ROUND_FLOOR) * step
+
+
+def _round_up(value: Decimal, step: Decimal) -> Decimal:
+    rounded_down = _round_down(value, step)
+    return rounded_down if rounded_down == value else rounded_down + step
 
 
 def _share(value: Decimal, denominator: Decimal) -> Decimal:

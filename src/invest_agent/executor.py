@@ -449,7 +449,7 @@ class ExactPackageExecutor:
                     "current BCS order book cannot fill the exact approved quantity at its limit"
                 )
         if current_buy_cash > snapshot.cash_rub:
-            raise ExecutionViolation("current free cash is below the approved package estimate")
+            raise ExecutionViolation("current free cash is below the approved order-list estimate")
 
     def _submit_all(
         self,

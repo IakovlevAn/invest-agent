@@ -72,7 +72,12 @@ For “what should I buy/sell?”, “where should I invest 50,000 ₽?” or si
 2. If it raises a critical or ambiguous issuer signal, investigate only that
    issuer with the relevant primary evidence. Do not download broad disclosure
    archives for a routine portfolio answer.
-3. Apply deterministic policy checks before presenting a proposal.
+3. Apply deterministic policy checks before presenting a proposal. Size holdings
+   through the constrained risk/return model: maximize comparable yield while
+   keeping portfolio stress loss and issuer risk inside the owner's drawdown and
+   concentration budgets. Rating classes provide configurable scenario haircuts,
+   not fixed sell fractions or default probabilities. Compare yield per unit of
+   stress risk, liquidity and available replacements; explain the binding budget.
 4. Give a concise Russian response with:
    - decision and amount;
    - effect on portfolio risk and expected return;
@@ -87,22 +92,22 @@ data quality and scenario sensitivity.
 ## Trade boundary
 
 The executor can send only an already persisted and exactly confirmed BCS limit
-order package. Recommendation, audit, proposal and confirmation commands cannot
+order list. Recommendation, audit, proposal and confirmation commands cannot
 send broker orders. Never claim submission or execution without a BCS status.
 
 An analysis or recommendation does not authorize a trade. If the user asks to
 prepare a specific recommended action, Codex may run the internal `proposal`
-command with one or more exact manager actions in one immutable package. It must
+command with one or more exact manager actions in one immutable proposal. It must
 show the user all of: ISIN, ticker, BCS board, side, lots,
 security units, limit price, price step, estimated RUB cash including accrued
 interest, quote observation time, client-side order validity, proposal expiry
 and the full 64-character SHA-256 digest.
 
 Confirmation is a separate Codex turn. The user does not type or copy the digest:
-Codex binds their semantic confirmation to the single active package internally.
-Accept only wording that explicitly authorizes the displayed trade package, such
-as “подтверждаю выставление всего предложенного пакета заявок”, “покупаем этот
-пакет” or “продаём предложенный пакет”. A bare “давай”, “ок”, “готово”, a
+Codex binds their semantic confirmation to the single active proposal internally.
+Accept only wording that explicitly authorizes the displayed trades, such as
+“подтверждаю выставление всех предложенных заявок”, “покупаем предложенные
+активы” or “продаём предложенные позиции”. A bare “давай”, “ок”, “готово”, a
 question, conditional language, or approval of the analysis is not confirmation.
 If wording is ambiguous, ask one short confirmation question and do not run any
 trading command.
@@ -111,7 +116,7 @@ After an unambiguous semantic confirmation, run internal `confirm --digest
 <active digest> --user-confirmation <user message>`, then
 `execute --digest <same digest>`. Never pass arbitrary instrument, side, quantity
 or price arguments to the executor. The deterministic gate rejects a digest that
-is not the single active package and rejects negative, conditional, question-like
+is not the single active proposal and rejects negative, conditional, question-like
 or side-mismatched wording.
 The one-time confirmation receipt has state
 `APPROVED_AWAITING_ISOLATED_EXECUTOR` until execution begins.
@@ -131,8 +136,8 @@ Report partial fills honestly: a BCS basket is not atomic and cancellation canno
 undo an already executed quantity.
 
 Any change to instrument, board, side, lots, limit price, quote time or validity
-requires a new package, digest and confirmation. Build exact packages only while
-BCS reports trading open and the quote/order book are fresh. Use only limit
+requires a new proposal, digest and confirmation. Build exact order lists only
+while BCS reports trading open and the quote/order book are fresh. Use only limit
 orders; do not expose withdrawal, transfer, margin or derivative actions. The
 client-side validity is not a native BCS time-in-force field; the executor must
 remain running or be reconciled to cancel the remaining order by that deadline.

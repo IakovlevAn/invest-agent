@@ -24,6 +24,7 @@ from invest_agent.trade_proposal import (
     ExactTradeProposalBuilder,
     LocalTradeGateStore,
     TradeProposalPolicy,
+    proposal_as_dict,
 )
 from test_manager import bond, inputs, rating
 
@@ -110,7 +111,8 @@ class MultiFakeBcsClient(FakeBcsClient):
 
 
 def manager_report_and_snapshot():
-    record = bond(ISIN, emitter_id=2, value="20000", yield_percent="28")
+    record = bond(ISIN, emitter_id=2, value="21000", yield_percent="28")
+    record = replace(record, position=replace(record.position, quantity=Decimal("21")))
     audit, bonds, credit = inputs(
         (record,),
         (
@@ -129,9 +131,9 @@ def manager_report_and_snapshot():
     policy = InvestmentPolicy.from_toml(POLICY_PATH)
     report = PortfolioManager(
         policy,
-        ManagerPolicy(
+        replace(
+            ManagerPolicy.from_toml(POLICY_PATH),
             max_bond_issuer_share_after_add=Decimal("0.15"),
-            speculative_reduce_fraction=Decimal("0.50"),
             minimum_allocation_rub=Decimal("5000"),
             allocation_rounding_rub=Decimal("100"),
             maximum_single_purchase_share_of_cash=Decimal("0.40"),
@@ -151,9 +153,11 @@ def manager_report_and_snapshot():
 class ExactTradeProposalTests(unittest.TestCase):
     def test_builds_one_digest_for_multiple_exact_orders(self) -> None:
         second_isin = "RU000A000003"
-        records = (
-            bond(ISIN, emitter_id=2, value="20000", yield_percent="28"),
-            bond(second_isin, emitter_id=3, value="20000", yield_percent="27"),
+        first = bond(ISIN, emitter_id=2, value="20000", yield_percent="28")
+        second = bond(second_isin, emitter_id=3, value="20000", yield_percent="27")
+        records = tuple(
+            replace(record, position=replace(record.position, quantity=Decimal("20")))
+            for record in (first, second)
         )
         audit, bonds, credit = inputs(
             records,
@@ -174,9 +178,9 @@ class ExactTradeProposalTests(unittest.TestCase):
         policy = InvestmentPolicy.from_toml(POLICY_PATH)
         report = PortfolioManager(
             policy,
-            ManagerPolicy(
+            replace(
+                ManagerPolicy.from_toml(POLICY_PATH),
                 max_bond_issuer_share_after_add=Decimal("0.15"),
-                speculative_reduce_fraction=Decimal("0.50"),
                 minimum_allocation_rub=Decimal("5000"),
                 allocation_rounding_rub=Decimal("100"),
                 maximum_single_purchase_share_of_cash=Decimal("0.40"),
@@ -226,9 +230,9 @@ class ExactTradeProposalTests(unittest.TestCase):
 
         order = proposal.orders[0]
         self.assertEqual(order.limit_price, Decimal("99.90"))
-        self.assertEqual(order.lots, 9)
-        self.assertEqual(order.quantity_units, 9)
-        self.assertEqual(order.estimated_cash_rub, Decimal("9081.00"))
+        self.assertEqual(order.lots, 20)
+        self.assertEqual(order.quantity_units, 20)
+        self.assertEqual(order.estimated_cash_rub, Decimal("20180.00"))
         self.assertEqual(proposal.expires_at, NOW + timedelta(minutes=10))
         self.assertEqual(order.order_valid_until, NOW + timedelta(hours=1))
         self.assertEqual(len(proposal.digest), 64)
@@ -264,7 +268,7 @@ class ExactTradeProposalTests(unittest.TestCase):
             receipt = gate.confirm_semantic(
                 proposal_digest=proposal.digest,
                 user_message=(
-                    "Подтверждаю выставление всего предложенного пакета заявок"
+                    "Подтверждаю выставление всех предложенных заявок"
                 ),
             )
 
@@ -274,7 +278,7 @@ class ExactTradeProposalTests(unittest.TestCase):
                 gate.confirm_semantic(
                     proposal_digest=proposal.digest,
                     user_message=(
-                        "Подтверждаю выставление всего предложенного пакета заявок"
+                        "Подтверждаю выставление всех предложенных заявок"
                     ),
                 )
 
@@ -303,12 +307,12 @@ class ExactTradeProposalTests(unittest.TestCase):
 
             receipt = gate.confirm_semantic(
                 proposal_digest=proposal.digest,
-                user_message="Да, продаем этот пакет",
+                user_message="Да, продаем предложенные позиции",
             )
 
         self.assertEqual(receipt.confirmation_mode, "CODEX_SEMANTIC")
         self.assertIsNotNone(receipt.confirmation_evidence_digest)
-        self.assertNotIn(proposal.digest, "Да, продаем этот пакет")
+        self.assertNotIn(proposal.digest, "Да, продаем предложенные позиции")
 
     def test_semantic_confirmation_rejects_acknowledgement_question_and_wrong_side(self) -> None:
         policy, report, snapshot = manager_report_and_snapshot()
@@ -375,8 +379,28 @@ class ExactTradeProposalTests(unittest.TestCase):
             with self.assertRaisesRegex(ApprovalViolation, "active proposal"):
                 gate.confirm_semantic(
                     proposal_digest=first.digest,
-                    user_message="Да, продаем этот пакет",
+                    user_message="Да, продаем предложенные позиции",
                 )
+
+    def test_confirmation_examples_avoid_package_wording(self) -> None:
+        policy, report, snapshot = manager_report_and_snapshot()
+        proposal = ExactTradeProposalBuilder(
+            client=FakeBcsClient(),
+            investment_policy=policy,
+            proposal_policy=TradeProposalPolicy.from_toml(POLICY_PATH),
+            now=lambda: NOW,
+        ).build_manager_action(
+            report=report,
+            snapshot=snapshot,
+            access_token=object(),
+            isin=ISIN,
+            side=Side.SELL,
+        )
+
+        examples = proposal_as_dict(proposal)["confirmation_examples"]
+
+        self.assertTrue(examples)
+        self.assertTrue(all("пакет" not in example.casefold() for example in examples))
 
     def test_caps_lots_to_displayed_units_at_limit_price(self) -> None:
         policy, report, snapshot = manager_report_and_snapshot()

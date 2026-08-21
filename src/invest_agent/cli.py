@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
+from decimal import ROUND_FLOOR, Decimal
 from pathlib import Path
 
 from invest_agent.approval import ApprovalViolation
@@ -113,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     proposal = commands.add_parser(
         "proposal",
-        help="Build and persist an exact BCS-verified limit-order package",
+        help="Build and persist an exact BCS-verified list of limit orders",
     )
     _add_read_options(proposal)
     proposal.add_argument("--isin", help="Exact ISIN from the manager report")
@@ -141,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     execute = commands.add_parser(
         "execute",
-        help="Execute only a persisted package with its exact Codex approval receipt",
+        help="Execute only a persisted exact order list with its Codex approval receipt",
     )
     execute.add_argument("--digest", required=True, help="Full SHA-256 proposal digest")
     execute.add_argument("--format", choices=("text", "json"), default="text")
@@ -155,7 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     reconcile = commands.add_parser(
         "reconcile",
-        help="Refresh or cancel already-submitted package orders without creating new ones",
+        help="Refresh or cancel already-submitted orders without creating new ones",
     )
     reconcile.add_argument("--digest", required=True)
     reconcile.add_argument("--format", choices=("text", "json"), default="text")
@@ -207,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
             else:
                 print(
-                    f"Исполнение пакета {report.proposal_digest}: {report.state}\n"
+                    f"Исполнение списка заявок {report.proposal_digest}: {report.state}\n"
                     f"Последнее обновление: {report.updated_at.isoformat()}"
                 )
             return 0
@@ -218,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
             else:
                 print(
-                    f"Исполнение точного пакета: {report.state}\n"
+                    f"Исполнение точного списка заявок: {report.state}\n"
                     f"Digest: {report.proposal_digest}\n"
                     f"Последнее обновление: {report.updated_at.isoformat()}"
                 )
@@ -229,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
             else:
                 print(
-                    f"Сверка точного пакета: {report.state}\n"
+                    f"Сверка точного списка заявок: {report.state}\n"
                     f"Digest: {report.proposal_digest}\n"
                     f"Последнее обновление: {report.updated_at.isoformat()}"
                 )
@@ -247,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(receipt.as_dict(), ensure_ascii=False, indent=2))
             else:
                 print(
-                    "Точный пакет подтверждён в Codex.\n"
+                    "Точный список заявок подтверждён в Codex.\n"
                     f"Digest: {receipt.approval.proposal_digest}\n"
                     "Подтверждение действует до: "
                     f"{receipt.approval.expires_at.isoformat()}\n"
@@ -315,7 +317,14 @@ def main(argv: list[str] | None = None) -> int:
             print(renderer(report))
             return 0
         if args.command in {"recommend", "proposal"}:
-            investment_policy, bonds, report = _build_manager_report(snapshot)
+            investment_policy, audit, bonds, manager, report = _build_manager_report(
+                snapshot,
+                buy_availability=lambda isins: _bcs_buy_available_isins(
+                    bcs,
+                    session.access_token,
+                    isins,
+                ),
+            )
             if args.command == "proposal":
                 actions = _parse_exact_actions(args)
                 proposal = ExactTradeProposalBuilder(
@@ -344,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
                         payload["confirmation_examples"]
                     )
                     print(
-                        "Точный пакет лимитных заявок "
+                        "Точный список лимитных заявок "
                         "сформирован.\n"
                         f"{order_lines}\n"
                         f"Digest: {proposal.digest}\n"
@@ -355,19 +364,37 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 return 0
 
-            payload = report.as_dict()
             try:
                 checks_complete = True
-                checks = BcsTradeVerifier(bcs).verify_manager_actions(
+                verifier = BcsTradeVerifier(bcs)
+                preliminary_checks = verifier.verify_manager_actions(
+                    report,
+                    session.access_token,
+                    include_unallocated_buys=True,
+                )
+                report = manager.apply_bcs_buy_availability(
+                    report,
+                    audit,
+                    bonds,
+                    {
+                        check.isin
+                        for check in preliminary_checks
+                        if check.side is Side.BUY and check.broker_catalog_available
+                    },
+                )
+                checks = verifier.verify_manager_actions(
                     report,
                     session.access_token,
                 )
-                payload["bcs_trade_checks"] = [check.as_dict() for check in checks]
             except BcsApiError as error:
                 checks_complete = False
                 checks = ()
-                payload["bcs_trade_checks"] = []
-                payload["data_failures"].append(str(error))
+                report = replace(
+                    report,
+                    data_failures=tuple(sorted({*report.data_failures, str(error)})),
+                )
+            payload = report.as_dict()
+            payload["bcs_trade_checks"] = [check.as_dict() for check in checks]
             try:
                 rate_report = BondRateModel(
                     RateScenarioPolicy.from_toml(POLICY_FILE)
@@ -389,7 +416,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.format == "json":
                 print(json.dumps(payload, ensure_ascii=False, indent=2))
             else:
-                additions = _render_recommendation_additions(checks, rate_report)
+                additions = _render_recommendation_additions(
+                    checks,
+                    rate_report,
+                    checks_complete=checks_complete,
+                )
                 print(render_manager_report_text(report) + additions)
             return 0
     except (
@@ -491,7 +522,7 @@ def _parse_exact_actions(args) -> tuple[tuple[str, Side], ...]:
     return ((args.isin.strip().upper(), Side(args.side)),)
 
 
-def _build_manager_report(snapshot):
+def _build_manager_report(snapshot, *, buy_availability=None):
     investment_policy = InvestmentPolicy.from_toml(POLICY_FILE)
     audit = PortfolioAuditor(investment_policy).audit(snapshot)
     moex = MoexIssClient()
@@ -504,17 +535,47 @@ def _build_manager_report(snapshot):
         ratings,
         credit_policy,
         BondUniversePolicy.from_toml(POLICY_FILE),
+        buy_availability=buy_availability,
     ).screen(snapshot, bonds)
-    report = PortfolioManager(
+    manager = PortfolioManager(
         investment_policy,
         ManagerPolicy.from_toml(POLICY_FILE),
-    ).recommend(audit, bonds, credit, universe)
-    return investment_policy, bonds, report
+    )
+    report = manager.recommend(audit, bonds, credit, universe)
+    return investment_policy, audit, bonds, manager, report
 
 
-def _render_recommendation_additions(checks, rate_report) -> str:
+def _bcs_buy_available_isins(bcs, access_token, isins) -> set[str]:
+    available: set[str] = set()
+    batch_size = 50
+    for start in range(0, len(isins), batch_size):
+        instruments = bcs.fetch_instruments_by_isins(
+            access_token,
+            tuple(isins[start : start + batch_size]),
+        )
+        available.update(
+            instrument.isin
+            for instrument in instruments
+            if instrument.is_ruble_bond
+            and not instrument.is_blocked
+            and not instrument.is_qualified_only
+            and instrument.available_for_unqualified
+            and instrument.lot_size > 0
+            and instrument.minimum_step > 0
+        )
+    return available
+
+
+def _render_recommendation_additions(
+    checks,
+    rate_report,
+    *,
+    checks_complete: bool = True,
+) -> str:
     lines = ["", "", "Проверка БКС:"]
-    if not checks:
+    if not checks_complete:
+        lines.append("- проверка недоступна; рекомендации нельзя считать исполнимыми")
+    elif not checks:
         lines.append("- нет действий с положительной суммой для точной проверки")
     for check in checks:
         status = (
@@ -522,11 +583,20 @@ def _render_recommendation_additions(checks, rate_report) -> str:
             if check.broker_catalog_available
             else "заблокирован"
         )
-        lines.append(
+        line = (
             f"- {check.side.value} {check.isin}: {status}; "
             f"лот {check.lot_size or 'н/д'}; сессия "
             f"{'открыта' if check.trading_is_open else 'закрыта'}"
         )
+        estimated = _estimate_bond_action(check)
+        if estimated is not None:
+            lots, units, price, cash = estimated
+            quote_side = "offer" if check.side is Side.BUY else "bid"
+            line += (
+                f"; ориентир {units} шт. ({lots} лот.), {quote_side} "
+                f"{price}% и грязная сумма {cash:,.0f} ₽"
+            )
+        lines.append(line)
     lines.extend(["", "Модель ставки:"])
     if rate_report is None:
         lines.append("- недоступна")
@@ -538,6 +608,33 @@ def _render_recommendation_additions(checks, rate_report) -> str:
         for bond in rate_report.bonds:
             lines.append(f"- {bond.ticker}: {bond.model_type}")
     return "\n".join(lines)
+
+
+def _estimate_bond_action(check) -> tuple[int, int, Decimal, Decimal] | None:
+    price = check.offer if check.side is Side.BUY else check.bid
+    if (
+        price is None
+        or check.face_value is None
+        or check.accrued_interest is None
+        or check.lot_size is None
+        or check.lot_size <= 0
+    ):
+        return None
+    dirty_unit_cost = (
+        check.face_value * price / Decimal("100") + check.accrued_interest
+    )
+    if dirty_unit_cost <= 0:
+        return None
+    units_by_amount = int(
+        (check.target_amount_rub / dirty_unit_cost).to_integral_value(
+            rounding=ROUND_FLOOR
+        )
+    )
+    lots = units_by_amount // check.lot_size
+    if lots <= 0:
+        return None
+    units = lots * check.lot_size
+    return lots, units, price, dirty_unit_cost * units
 
 
 if __name__ == "__main__":

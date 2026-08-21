@@ -271,9 +271,14 @@ class BcsReadClient:
             self._parse_instrument(item, response.status, index)
             for index, item in enumerate(payload)
         )
-        if len({item.isin for item in instruments}) != len(instruments):
-            raise BcsApiError("instruments-by-isins-duplicate-contract", response.status)
-        return instruments
+        by_isin: dict[str, list[BcsInstrument]] = {}
+        for instrument in instruments:
+            by_isin.setdefault(instrument.isin, []).append(instrument)
+        return tuple(
+            min(by_isin[isin], key=self._instrument_preference)
+            for isin in normalized
+            if isin in by_isin
+        )
 
     def fetch_quotes(
         self,
@@ -374,6 +379,18 @@ class BcsReadClient:
     def _require_live_token(self, access_token: BcsAccessToken, operation: str) -> None:
         if access_token.expires_at <= self._now():
             raise BcsApiError(operation, 401)
+
+    @staticmethod
+    def _instrument_preference(instrument: BcsInstrument) -> tuple[Any, ...]:
+        return (
+            not instrument.is_ruble_bond,
+            instrument.is_blocked,
+            instrument.primary_board != "TQCB",
+            instrument.is_qualified_only,
+            not instrument.available_for_unqualified,
+            instrument.ticker,
+            instrument.primary_board,
+        )
 
     @staticmethod
     def _authorized_headers(

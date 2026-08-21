@@ -138,7 +138,7 @@ class ExactTradeProposalBuilder:
         if not normalized_actions or len(normalized_actions) != len(actions):
             raise TradeProposalError("at least one exact manager action is required")
         if len({isin for isin, _ in normalized_actions}) != len(normalized_actions):
-            raise TradeProposalError("an ISIN may occur only once in an exact package")
+            raise TradeProposalError("an ISIN may occur only once in an exact order list")
         targets = tuple(
             (isin, side, *_manager_target(report, isin, side))
             for isin, side in normalized_actions
@@ -188,7 +188,7 @@ class ExactTradeProposalBuilder:
             start=Decimal("0"),
         )
         if total_buy_cash > snapshot.cash_rub:
-            raise TradeProposalError("exact package purchases exceed current free cash")
+            raise TradeProposalError("exact proposed purchases exceed current free cash")
         projected_return = _projected_return(
             report,
             Side.BUY if any(order.side is Side.BUY for order in orders) else Side.SELL,
@@ -283,14 +283,22 @@ class ExactTradeProposalBuilder:
         dirty_lot_value = dirty_unit_value * instrument.lot_size
         if dirty_lot_value <= 0:
             raise TradeProposalError("calculated dirty lot value is not positive")
-        requested_lots = int(
-            (target_amount_rub / dirty_lot_value).to_integral_value(rounding=ROUND_FLOOR)
-        )
-        if requested_lots <= 0:
-            raise TradeProposalError("target amount is smaller than one BCS lot")
 
         if side is Side.SELL:
             position = _find_position(snapshot, instrument)
+            if position.market_value_rub <= 0:
+                raise TradeProposalError("current position market value is not positive")
+            target_fraction = min(
+                Decimal("1"), target_amount_rub / position.market_value_rub
+            )
+            requested_units = position.quantity * target_fraction
+            requested_lots = int(
+                (requested_units / Decimal(instrument.lot_size)).to_integral_value(
+                    rounding=ROUND_FLOOR
+                )
+            )
+            if requested_lots <= 0:
+                raise TradeProposalError("target reduction is smaller than one BCS lot")
             available_lots = int(
                 (position.available_quantity / Decimal(instrument.lot_size)).to_integral_value(
                     rounding=ROUND_FLOOR
@@ -300,6 +308,13 @@ class ExactTradeProposalBuilder:
             if lots <= 0:
                 raise TradeProposalError("the portfolio has no unlocked full lot to sell")
         else:
+            requested_lots = int(
+                (target_amount_rub / dirty_lot_value).to_integral_value(
+                    rounding=ROUND_FLOOR
+                )
+            )
+            if requested_lots <= 0:
+                raise TradeProposalError("target amount is smaller than one BCS lot")
             affordable_lots = int(
                 (snapshot.cash_rub / dirty_lot_value).to_integral_value(rounding=ROUND_FLOOR)
             )
@@ -569,11 +584,11 @@ def proposal_as_dict(proposal: ProposalBundle) -> dict[str, Any]:
     payload["proposal_digest"] = proposal.digest
     payload["confirmation_mode"] = "CODEX_SEMANTIC"
     side_examples = {
-        frozenset({Side.BUY}): "Да, покупаем этот пакет",
-        frozenset({Side.SELL}): "Да, продаем этот пакет",
+        frozenset({Side.BUY}): "Да, покупаем предложенные активы",
+        frozenset({Side.SELL}): "Да, продаем предложенные позиции",
     }
     payload["confirmation_examples"] = [
-        "Подтверждаю выставление всего предложенного пакета заявок",
+        "Подтверждаю выставление всех предложенных заявок",
     ]
     side_example = side_examples.get(frozenset(order.side for order in proposal.orders))
     if side_example is not None:
@@ -595,7 +610,7 @@ def validate_semantic_confirmation(user_message: str) -> str:
         raise ApprovalViolation("a question cannot authorize a trade")
     if re.search(r"\d", normalized):
         raise ApprovalViolation(
-            "semantic confirmation cannot override numeric package parameters"
+            "semantic confirmation cannot override numeric trade parameters"
         )
     if re.search(
         r"\b(?:не|нет|без|но|кроме|часть\w*|половин\w*|друг\w*|услов\w*|"
@@ -613,12 +628,13 @@ def validate_semantic_confirmation(user_message: str) -> str:
         normalized,
     )
     trade_object = re.search(
-        r"\b(?:пакет\w*|заяв\w*|сделк\w*|покупк\w*|продаж\w*|ордер\w*)\b",
+        r"\b(?:пакет\w*|заяв\w*|сделк\w*|покупк\w*|продаж\w*|ордер\w*|"
+        r"актив\w*|позиц\w*|бумаг\w*)\b",
         normalized,
     )
     if trade_object is None or (confirmation is None and action is None):
         raise ApprovalViolation(
-            "semantic confirmation must explicitly authorize the proposed trade package"
+            "semantic confirmation must explicitly authorize the proposed trades"
         )
     return normalized
 
@@ -646,7 +662,7 @@ def _validate_semantic_sides(
         return
     if mentioned_sides != proposal_sides:
         raise ApprovalViolation(
-            "semantic confirmation side does not match the whole proposed package"
+            "semantic confirmation side does not match all proposed trades"
         )
 
 
@@ -696,9 +712,6 @@ def _projected_credit_stress_package(
     by_isin = {isin: (side, amount) for isin, side, amount in actions}
     stressed_value = Decimal("0")
     for decision in report.decisions:
-        shock = _rating_shock(
-            None if decision.broad_rating_band is None else decision.broad_rating_band.value
-        )
         value = decision.market_value_rub
         action = by_isin.get(decision.isin)
         if action is not None:
@@ -708,7 +721,7 @@ def _projected_credit_stress_package(
                 if side is Side.SELL
                 else value + amount
             )
-        stressed_value += value * shock
+        stressed_value += value * decision.stress_loss_fraction
     current_isins = {decision.isin for decision in report.decisions}
     for isin, (side, amount) in by_isin.items():
         if side is not Side.BUY or isin in current_isins:
@@ -718,26 +731,12 @@ def _projected_credit_stress_package(
             None,
         )
         if candidate is not None:
-            stressed_value += amount * _rating_shock(candidate.broad_rating_band.value)
+            stressed_value += amount * candidate.stress_loss_fraction
     return (
         Decimal("0")
         if report.managed_value_rub == 0
         else stressed_value / report.managed_value_rub
     )
-
-
-def _rating_shock(value: str | None) -> Decimal:
-    return {
-        "HIGHEST": Decimal("0.02"),
-        "HIGH": Decimal("0.04"),
-        "STRONG": Decimal("0.07"),
-        "ADEQUATE": Decimal("0.15"),
-        "SPECULATIVE": Decimal("0.50"),
-        "UNRATED": Decimal("1.00"),
-        None: Decimal("1.00"),
-    }[value]
-
-
 def _align_price(price: Decimal, step: Decimal, side: Side) -> Decimal:
     rounding = ROUND_CEILING if side is Side.BUY else ROUND_FLOOR
     steps = (price / step).to_integral_value(rounding=rounding)
