@@ -1,0 +1,21 @@
+{
+  "foundCompaniesList": [
+    {
+      "id": 38662,
+      "name": "ООО \"ВУШ\"",
+      "district": "Центральный",
+      "region": "Москва",
+      "branch": "Иное",
+      "lastActivity": "2026-08-07T11:05:57.443",
+      "docCount": 65
+    }
+  ],
+  "pagingInfo": {
+    "totalItems": 1,
+    "itemsPerPage": 10,
+    "currentPage": 1,
+    "totalPages": 1
+  },
+  "allFoundCompanies": 1,
+  "maxFoundCompaniesToShow": 400
+}

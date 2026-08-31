@@ -6,6 +6,7 @@ from pathlib import Path
 
 from invest_agent.cli import (
     PROJECT_ROOT,
+    _public_order_list_payload,
     _configured_path_from_local_env,
     _parse_exact_actions,
     _token_file_from_local_env,
@@ -16,15 +17,55 @@ from invest_agent.secrets import SecretStoreError
 
 
 class LocalEnvTests(unittest.TestCase):
+    def test_public_order_list_hides_internal_confirmation_metadata(self) -> None:
+        public = _public_order_list_payload(
+            {
+                "proposal_id": "internal",
+                "proposal_digest": "a" * 64,
+                "expires_at": "2026-08-31T20:00:00+03:00",
+                "confirmation_examples": ["Подтверждаю"],
+                "orders": [
+                    {
+                        "ticker": "TEST",
+                        "quote_observed_at": "hidden",
+                        "order_valid_until": "hidden",
+                        "limit_price": "100",
+                    }
+                ],
+            }
+        )
+
+        self.assertNotIn("proposal_digest", public)
+        self.assertNotIn("expires_at", public)
+        self.assertNotIn("confirmation_examples", public)
+        self.assertNotIn("quote_observed_at", public["orders"][0])
+        self.assertEqual(public["orders"][0]["limit_price"], "100")
+
     def test_recommend_command_is_available(self) -> None:
         args = build_parser().parse_args(["recommend", "--format", "json"])
 
         self.assertEqual(args.command, "recommend")
         self.assertEqual(args.format, "json")
 
+        cash_terms = build_parser().parse_args(["cash-terms", "--format", "json"])
+        self.assertEqual(cash_terms.command, "cash-terms")
+        bond_income = build_parser().parse_args(["bond-income", "--format", "json"])
+        self.assertEqual(bond_income.command, "bond-income")
+
     def test_exact_proposal_and_confirmation_commands_are_available(self) -> None:
         proposal = build_parser().parse_args(
-            ["proposal", "--isin", "RU000A000000", "--side", "BUY"]
+            [
+                "proposal",
+                "--isin",
+                "RU000A000000",
+                "--side",
+                "BUY",
+                "--current-cash-only",
+                "--settlement-term",
+                "T1",
+                "--exclude-buy-isin",
+                "RU000A000999",
+            ]
         )
         confirmation = build_parser().parse_args(
             [
@@ -37,6 +78,9 @@ class LocalEnvTests(unittest.TestCase):
         )
 
         self.assertEqual(proposal.side, "BUY")
+        self.assertTrue(proposal.current_cash_only)
+        self.assertEqual(proposal.settlement_term, "T1")
+        self.assertEqual(proposal.exclude_buy_isin, ["RU000A000999"])
         self.assertEqual(confirmation.digest, "a" * 64)
         self.assertEqual(
             confirmation.user_confirmation,

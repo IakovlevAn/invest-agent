@@ -69,6 +69,9 @@ class FakeNormalizer:
     def normalize(self, raw, *, is_iis: bool) -> PortfolioSnapshot:
         return self.snapshot
 
+    def cash_by_settlement_term(self, raw) -> dict[str, Decimal]:
+        return {"T0": self.snapshot.cash_rub, "T1": self.snapshot.cash_rub}
+
 
 class AlternatingNormalizer(FakeNormalizer):
     def __init__(self, first: PortfolioSnapshot, second: PortfolioSnapshot) -> None:
@@ -336,7 +339,7 @@ class ExactPackageExecutorTests(unittest.TestCase):
         self.assertEqual(trade.create_count, 0)
         self.assertNotIn("trade-exchange", events)
 
-    def test_changed_order_book_blocks_entire_package_before_trade_authorization(self) -> None:
+    def test_resting_limit_submits_even_when_displayed_depth_is_shallow(self) -> None:
         package = proposal(order())
         with tempfile.TemporaryDirectory() as directory:
             executor, trade, events = self._executor(
@@ -345,11 +348,11 @@ class ExactPackageExecutorTests(unittest.TestCase):
                 read_client=FakeReadClient(shallow_book=True),
             )
 
-            with self.assertRaisesRegex(ExecutionViolation, "exact approved quantity"):
-                executor.execute(package.digest)
+            report = executor.execute(package.digest)
 
-        self.assertEqual(trade.create_count, 0)
-        self.assertNotIn("trade-exchange", events)
+        self.assertEqual(report.state, "COMPLETE")
+        self.assertEqual(trade.create_count, 1)
+        self.assertIn("trade-exchange", events)
 
     def test_different_trade_token_account_blocks_before_order(self) -> None:
         package = proposal(order())

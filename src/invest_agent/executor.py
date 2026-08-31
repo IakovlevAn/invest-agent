@@ -247,8 +247,8 @@ class ExactPackageExecutor:
             return self._execution_store.report(proposal_digest)
 
         try:
-            snapshot, read_access = self._refresh_read_session()
-            self._preflight(proposal, snapshot, read_access)
+            snapshot, cash_by_term, read_access = self._refresh_read_session()
+            self._preflight(proposal, snapshot, cash_by_term, read_access)
             validate_approval(proposal, receipt.approval, now=self._now())
             journal["state"] = "PREFLIGHT_PASSED"
             self._save(journal)
@@ -320,13 +320,19 @@ class ExactPackageExecutor:
         self._save(journal)
         return self._execution_store.report(proposal_digest)
 
-    def _refresh_read_session(self) -> tuple[PortfolioSnapshot, BcsAccessToken]:
+    def _refresh_read_session(
+        self,
+    ) -> tuple[PortfolioSnapshot, dict[str, Decimal], BcsAccessToken]:
         pair = self._read_client.exchange_read_only_refresh_token(
             self._read_token_store.get()
         )
         self._read_token_store.set(pair.refresh_token)
         raw = self._read_client.fetch_raw_portfolio(pair.access_token)
-        return self._normalizer.normalize(raw, is_iis=True), pair.access_token
+        return (
+            self._normalizer.normalize(raw, is_iis=True),
+            self._normalizer.cash_by_settlement_term(raw),
+            pair.access_token,
+        )
 
     def _refresh_trade_session(self) -> BcsAccessToken:
         pair = self._trade_client.exchange_trade_refresh_token(
@@ -359,6 +365,7 @@ class ExactPackageExecutor:
         self,
         proposal: ProposalBundle,
         snapshot: PortfolioSnapshot,
+        cash_by_settlement_term: dict[str, Decimal],
         access_token: BcsAccessToken,
     ) -> None:
         now = self._now()
@@ -430,25 +437,42 @@ class ExactPackageExecutor:
             )
             if (book.ticker, book.class_code) != (order.ticker, order.class_code):
                 raise ExecutionViolation("BCS order book does not match the approved order")
-            for observed_at in (quote.observed_at, book.observed_at):
-                age = (now - observed_at).total_seconds()
-                if age < -5 or age > self._proposal_policy.maximum_quote_age_seconds:
-                    raise ExecutionViolation("BCS quote or order book is stale")
-            levels = book.asks if order.side is Side.BUY else book.bids
-            executable_units = sum(
-                level.quantity
-                for level in levels
-                if (
-                    level.price <= order.limit_price
-                    if order.side is Side.BUY
-                    else level.price >= order.limit_price
+            if not self._proposal_policy.allow_resting_limit_orders_without_depth:
+                for observed_at in (quote.observed_at, book.observed_at):
+                    age = (now - observed_at).total_seconds()
+                    if (
+                        age < -5
+                        or age > self._proposal_policy.maximum_quote_age_seconds
+                    ):
+                        raise ExecutionViolation("BCS quote or order book is stale")
+                levels = book.asks if order.side is Side.BUY else book.bids
+                executable_units = sum(
+                    level.quantity
+                    for level in levels
+                    if (
+                        level.price <= order.limit_price
+                        if order.side is Side.BUY
+                        else level.price >= order.limit_price
+                    )
                 )
+                if executable_units < order.quantity_units:
+                    raise ExecutionViolation(
+                        "current BCS order book cannot fill the exact approved quantity at its limit"
+                    )
+        buy_terms = {
+            _settlement_term(order)
+            for order in proposal.orders
+            if order.side is Side.BUY
+        }
+        if len(buy_terms) > 1:
+            raise ExecutionViolation("approved buys use incompatible settlement terms")
+        settlement_term = next(iter(buy_terms), "T0")
+        available_cash = cash_by_settlement_term.get(settlement_term)
+        if available_cash is None:
+            raise ExecutionViolation(
+                f"BCS portfolio has no cash for settlement term {settlement_term}"
             )
-            if executable_units < order.quantity_units:
-                raise ExecutionViolation(
-                    "current BCS order book cannot fill the exact approved quantity at its limit"
-                )
-        if current_buy_cash > snapshot.cash_rub:
+        if current_buy_cash > available_cash:
             raise ExecutionViolation("current free cash is below the approved order-list estimate")
 
     def _submit_all(
@@ -566,6 +590,10 @@ def _order_isin(order: OrderIntent) -> str:
     if len(isin) != 12 or not isin.isalnum() or isin != isin.upper():
         raise ExecutionViolation("approved order has an invalid ISIN")
     return isin
+
+
+def _settlement_term(order: OrderIntent) -> str:
+    return "T1" if order.class_code.startswith("TQ") else "T0"
 
 
 def _order_client_id(digest: str, index: int) -> str:

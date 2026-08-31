@@ -135,6 +135,107 @@ class BcsPortfolioNormalizer:
             positions=tuple(positions),
         )
 
+    def cash_by_settlement_term(
+        self,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Decimal]:
+        raw_positions = payload.get("positions")
+        if not isinstance(raw_positions, list):
+            raise PortfolioContractError("BCS portfolio field 'positions' must be an array")
+        cash: defaultdict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        for index, raw in enumerate(raw_positions):
+            if not isinstance(raw, dict):
+                raise PortfolioContractError(f"positions[{index}] must be an object")
+            instrument_type = self._instrument_type(raw)
+            if not self._is_ruble_cash(raw, instrument_type):
+                continue
+            term = self._required_text(raw, "term", index).upper()
+            current_value_rub = self._decimal(raw, "currentValueRub", index)
+            if current_value_rub < 0:
+                raise PortfolioContractError(
+                    f"positions[{index}] contains negative cash"
+                )
+            cash[term] += current_value_rub
+        return dict(sorted(cash.items()))
+
+    def bond_income_summary(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        term: str = "T0",
+    ) -> dict[str, Any]:
+        raw_positions = payload.get("positions")
+        if not isinstance(raw_positions, list):
+            raise PortfolioContractError("BCS portfolio field 'positions' must be an array")
+        normalized_term = term.strip().upper()
+        positions: list[dict[str, Any]] = []
+        current_total = Decimal("0")
+        cost_total = Decimal("0")
+        daily_total = Decimal("0")
+        accrued_total = Decimal("0")
+        for index, raw in enumerate(raw_positions):
+            if not isinstance(raw, dict):
+                raise PortfolioContractError(f"positions[{index}] must be an object")
+            if self._required_text(raw, "term", index).upper() != normalized_term:
+                continue
+            if self._instrument_type(raw) is not InstrumentType.BOND:
+                continue
+            if str(raw.get("currency") or "").upper() != "RUB":
+                continue
+            quantity = self._decimal(raw, "quantity", index)
+            current_value = self._decimal(raw, "currentValueRub", index)
+            cost_value = self._decimal(raw, "balanceValueRub", index)
+            daily_pl = self._decimal(raw, "dailyPL", index)
+            accrued_per_unit = self._decimal(raw, "accruedIncome", index)
+            unrealized = current_value - cost_value
+            accrued = accrued_per_unit * quantity
+            positions.append(
+                {
+                    "ticker": self._required_text(raw, "ticker", index),
+                    "name": str(raw.get("displayName") or raw.get("ticker") or ""),
+                    "quantity": quantity,
+                    "current_value_rub": current_value,
+                    "cost_basis_rub": cost_value,
+                    "unrealized_pl_rub": unrealized,
+                    "unrealized_return_percent": (
+                        None
+                        if cost_value == 0
+                        else unrealized / cost_value * Decimal("100")
+                    ),
+                    "daily_pl_rub": daily_pl,
+                    "accrued_income_rub": accrued,
+                }
+            )
+            current_total += current_value
+            cost_total += cost_value
+            daily_total += daily_pl
+            accrued_total += accrued
+        unrealized_total = current_total - cost_total
+        return {
+            "settlement_term": normalized_term,
+            "current_value_rub": current_total,
+            "cost_basis_rub": cost_total,
+            "unrealized_pl_rub": unrealized_total,
+            "unrealized_return_percent": (
+                None
+                if cost_total == 0
+                else unrealized_total / cost_total * Decimal("100")
+            ),
+            "daily_pl_rub": daily_total,
+            "accrued_income_rub": accrued_total,
+            "positions": tuple(
+                sorted(
+                    positions,
+                    key=lambda item: (-item["current_value_rub"], item["ticker"]),
+                )
+            ),
+            "limitations": (
+                "Unrealized P&L is current BCS market value minus BCS cost basis.",
+                "Accrued income may already be reflected in dirty market value.",
+                "Historical coupons already paid, taxes and broker fees are not in this endpoint.",
+            ),
+        }
+
     def _select_current_term(self, raw_positions: list[Any]) -> list[dict[str, Any]]:
         by_term: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
         for index, raw in enumerate(raw_positions):
@@ -235,6 +336,32 @@ def portfolio_as_dict(snapshot: PortfolioSnapshot) -> dict[str, Any]:
             for item in snapshot.positions
         ],
     }
+
+
+def bond_income_as_dict(summary: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "settlement_term": summary["settlement_term"],
+        "current_value_rub": _optional_decimal_text(summary["current_value_rub"]),
+        "cost_basis_rub": _optional_decimal_text(summary["cost_basis_rub"]),
+        "unrealized_pl_rub": _optional_decimal_text(summary["unrealized_pl_rub"]),
+        "unrealized_return_percent": _optional_decimal_text(
+            summary["unrealized_return_percent"]
+        ),
+        "daily_pl_rub": _optional_decimal_text(summary["daily_pl_rub"]),
+        "accrued_income_rub": _optional_decimal_text(summary["accrued_income_rub"]),
+        "positions": [
+            {
+                key: (_optional_decimal_text(value) if isinstance(value, Decimal) else value)
+                for key, value in position.items()
+            }
+            for position in summary["positions"]
+        ],
+        "limitations": list(summary["limitations"]),
+    }
+
+
+def _optional_decimal_text(value: Decimal | None) -> str | None:
+    return None if value is None else format(value, "f")
 
 
 def render_portfolio_json(snapshot: PortfolioSnapshot) -> str:

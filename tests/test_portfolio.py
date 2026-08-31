@@ -4,6 +4,7 @@ import json
 import unittest
 from copy import deepcopy
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 from invest_agent.domain import InstrumentType
@@ -74,6 +75,23 @@ class PortfolioNormalizerTests(unittest.TestCase):
 
         self.assertEqual(str(snapshot.total_value_rub), "250000")
         self.assertEqual(len(snapshot.positions), 3)
+
+        cash_by_term = self.normalizer.cash_by_settlement_term(payload)
+        self.assertEqual(
+            cash_by_term,
+            {
+                "T0": Decimal("50000"),
+                "T1": Decimal("50000"),
+                "T2": Decimal("50000"),
+                "T365": Decimal("50000"),
+            },
+        )
+
+        income = self.normalizer.bond_income_summary(payload)
+        self.assertEqual(income["current_value_rub"], Decimal("102500"))
+        self.assertEqual(income["cost_basis_rub"], Decimal("100000"))
+        self.assertEqual(income["unrealized_pl_rub"], Decimal("2500"))
+        self.assertEqual(income["accrued_income_rub"], Decimal("2500"))
 
     def test_currency_without_board_is_hold_only(self) -> None:
         payload = fixture()

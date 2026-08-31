@@ -6,10 +6,12 @@ import argparse
 import json
 import sys
 from dataclasses import replace
+from datetime import timedelta
 from decimal import ROUND_FLOOR, Decimal
 from pathlib import Path
 
 from invest_agent.approval import ApprovalViolation
+from invest_agent.asset_dynamics import PortfolioAssetDynamicsAnalyzer
 from invest_agent.audit import PortfolioAuditor, render_audit_json, render_audit_text
 from invest_agent.bond_report import (
     BondPortfolioEnricher,
@@ -24,6 +26,13 @@ from invest_agent.credit import (
     CreditPortfolioAnalyzer,
     render_credit_report_json,
     render_credit_report_text,
+)
+from invest_agent.disclosure.interfax import EDisclosureClient
+from invest_agent.disclosures import (
+    DisclosurePolicy,
+    DisclosurePortfolioAnalyzer,
+    render_disclosure_report_json,
+    render_disclosure_report_text,
 )
 from invest_agent.domain import Side
 from invest_agent.executor import (
@@ -48,17 +57,18 @@ from invest_agent.policy import InvestmentPolicy, PolicyViolation
 from invest_agent.portfolio import (
     BcsPortfolioNormalizer,
     PortfolioContractError,
+    bond_income_as_dict,
     render_portfolio_json,
     render_portfolio_text,
 )
-from invest_agent.ratings.cbr import CbrRatingsClient
-from invest_agent.reader import PortfolioReader
 from invest_agent.rates import (
     BondRateModel,
     CbrKeyRateClient,
     CbrKeyRateError,
     RateScenarioPolicy,
 )
+from invest_agent.ratings.cbr import CbrRatingsClient
+from invest_agent.reader import PortfolioReader
 from invest_agent.secrets import (
     PrivateFileRefreshTokenStore,
     SecretStoreError,
@@ -89,6 +99,18 @@ def build_parser() -> argparse.ArgumentParser:
     portfolio = commands.add_parser("portfolio", help="Read and normalize the BCS portfolio")
     _add_read_options(portfolio)
 
+    cash_terms = commands.add_parser(
+        "cash-terms",
+        help="Read RUB cash separately for each BCS settlement term",
+    )
+    _add_read_options(cash_terms)
+
+    bond_income = commands.add_parser(
+        "bond-income",
+        help="Read current BCS bond cost basis, unrealized P&L and accrued income",
+    )
+    _add_read_options(bond_income)
+
     audit = commands.add_parser("audit", help="Run a deterministic point-in-time audit")
     _add_read_options(audit)
 
@@ -107,6 +129,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_read_options(fundamentals)
 
+    disclosures = commands.add_parser(
+        "disclosures",
+        help="Index consolidated and exact-issue issuer-filed disclosures",
+    )
+    _add_read_options(disclosures)
+
     recommend = commands.add_parser(
         "recommend",
         help="Build an approval-gated portfolio-manager recommendation",
@@ -124,6 +152,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--action",
         action="append",
         help="Repeatable exact action in SIDE:ISIN form; cannot be mixed with --isin/--side",
+    )
+    proposal.add_argument(
+        "--current-cash-only",
+        action="store_true",
+        help="Size buys only from current portfolio cash, excluding planned sale proceeds",
+    )
+    proposal.add_argument(
+        "--settlement-term",
+        choices=("T0", "T1", "T2"),
+        default="T0",
+        help="BCS cash settlement term used for buy sizing and exact cash checks",
+    )
+    proposal.add_argument(
+        "--exclude-buy-isin",
+        action="append",
+        default=[],
+        help="Exclude a stale or otherwise non-actionable buy ISIN before cash allocation",
     )
 
     confirm = commands.add_parser(
@@ -260,10 +305,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command in {
             "portfolio",
+            "cash-terms",
+            "bond-income",
             "audit",
             "bonds",
             "credit",
             "fundamentals",
+            "disclosures",
             "recommend",
             "proposal",
         }:
@@ -276,6 +324,42 @@ def main(argv: list[str] | None = None) -> int:
                 is_iis=True,
             ).refresh_session()
             snapshot = session.snapshot
+        if args.command == "cash-terms":
+            payload = {
+                "as_of": snapshot.as_of.isoformat(),
+                "selected_t0_cash_rub": str(snapshot.cash_rub),
+                "cash_by_settlement_term_rub": {
+                    term: str(value)
+                    for term, value in session.cash_by_settlement_term_rub
+                },
+            }
+            if args.format == "json":
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                lines = [
+                    f"Снимок: {payload['as_of']}",
+                    f"T0: {payload['selected_t0_cash_rub']} ₽",
+                ]
+                lines.extend(
+                    f"{term}: {value} ₽"
+                    for term, value in payload["cash_by_settlement_term_rub"].items()
+                )
+                print("\n".join(lines))
+            return 0
+        if args.command == "bond-income":
+            payload = bond_income_as_dict(session.bond_income_summary)
+            if args.format == "json":
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                print(
+                    "Облигации БКС:\n"
+                    f"Стоимость: {payload['current_value_rub']} ₽\n"
+                    f"Себестоимость: {payload['cost_basis_rub']} ₽\n"
+                    f"Нереализованный P&L: {payload['unrealized_pl_rub']} ₽ "
+                    f"({payload['unrealized_return_percent']}%)\n"
+                    f"НКД: {payload['accrued_income_rub']} ₽"
+                )
+            return 0
         if args.command == "portfolio":
             renderer = render_portfolio_json if args.format == "json" else render_portfolio_text
             print(renderer(snapshot))
@@ -316,6 +400,19 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(renderer(report))
             return 0
+        if args.command == "disclosures":
+            bonds = BondPortfolioEnricher(MoexIssClient()).enrich(snapshot)
+            report = DisclosurePortfolioAnalyzer(
+                EDisclosureClient(),
+                DisclosurePolicy.from_toml(POLICY_FILE),
+            ).analyze(bonds)
+            renderer = (
+                render_disclosure_report_json
+                if args.format == "json"
+                else render_disclosure_report_text
+            )
+            print(renderer(report))
+            return 0
         if args.command in {"recommend", "proposal"}:
             investment_policy, audit, bonds, manager, report = _build_manager_report(
                 snapshot,
@@ -326,6 +423,27 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             )
             if args.command == "proposal":
+                cash_by_term = dict(session.cash_by_settlement_term_rub)
+                proposal_cash_rub = cash_by_term.get(args.settlement_term)
+                if proposal_cash_rub is None:
+                    raise TradeProposalError(
+                        f"BCS portfolio has no RUB cash for {args.settlement_term}"
+                    )
+                report, _ = _apply_bcs_manager_constraints(
+                    manager,
+                    report,
+                    audit,
+                    bonds,
+                    bcs,
+                    session.access_token,
+                    include_planned_sale_proceeds=not args.current_cash_only,
+                    cash_override_rub=proposal_cash_rub,
+                    excluded_buy_isins={
+                        isin.strip().upper()
+                        for isin in args.exclude_buy_isin
+                        if isin.strip()
+                    },
+                )
                 actions = _parse_exact_actions(args)
                 proposal = ExactTradeProposalBuilder(
                     client=bcs,
@@ -336,11 +454,54 @@ def main(argv: list[str] | None = None) -> int:
                     snapshot=snapshot,
                     access_token=session.access_token,
                     actions=actions,
+                    available_cash_rub=proposal_cash_rub,
                 )
                 LocalTradeGateStore(TRADE_GATE_ROOT).save_proposal(proposal)
                 payload = proposal_as_dict(proposal)
+                payload["user_facing_name"] = "список заявок"
+                payload["manager_actions"] = {
+                    "existing": [
+                        {
+                            "isin": decision.isin,
+                            "action": decision.action.value,
+                            "recommended_add_rub": format(
+                                decision.recommended_add_rub,
+                                "f",
+                            ),
+                            "recommended_reduce_rub": format(
+                                decision.recommended_reduce_rub,
+                                "f",
+                            ),
+                        }
+                        for decision in report.decisions
+                        if decision.recommended_add_rub > 0
+                        or decision.recommended_reduce_rub > 0
+                    ],
+                    "new": [
+                        {
+                            "isin": candidate.isin,
+                            "recommended_add_rub": format(
+                                candidate.recommended_add_rub,
+                                "f",
+                            ),
+                            "estimated_lot_cost_rub": format(
+                                candidate.estimated_lot_cost_rub,
+                                "f",
+                            ),
+                        }
+                        for candidate in report.new_bond_candidates
+                        if candidate.recommended_add_rub > 0
+                    ],
+                }
+                payload["buy_bond_details"] = _buy_bond_details(proposal)
                 if args.format == "json":
-                    print(json.dumps(payload, ensure_ascii=False, indent=2))
+                    print(
+                        json.dumps(
+                            _public_order_list_payload(payload),
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    )
                 else:
                     order_lines = "\n".join(
                         f"- {order.side.value} {order.ticker}: {order.lots} лот(ов), "
@@ -349,41 +510,22 @@ def main(argv: list[str] | None = None) -> int:
                         f"расчётно {order.estimated_cash_rub} ₽"
                         for order in proposal.orders
                     )
-                    confirmation_examples = "» или «".join(
-                        payload["confirmation_examples"]
-                    )
                     print(
                         "Точный список лимитных заявок "
                         "сформирован.\n"
                         f"{order_lines}\n"
-                        f"Digest: {proposal.digest}\n"
-                        "Для подтверждения ответь обычной однозначной фразой, "
-                        f"например: «{confirmation_examples}». "
-                        "Digest вводить не нужно.\n"
                         "Заявки в БКС не отправлены."
                     )
                 return 0
 
             try:
                 checks_complete = True
-                verifier = BcsTradeVerifier(bcs)
-                preliminary_checks = verifier.verify_manager_actions(
-                    report,
-                    session.access_token,
-                    include_unallocated_buys=True,
-                )
-                report = manager.apply_bcs_buy_availability(
+                report, checks = _apply_bcs_manager_constraints(
+                    manager,
                     report,
                     audit,
                     bonds,
-                    {
-                        check.isin
-                        for check in preliminary_checks
-                        if check.side is Side.BUY and check.broker_catalog_available
-                    },
-                )
-                checks = verifier.verify_manager_actions(
-                    report,
+                    bcs,
                     session.access_token,
                 )
             except BcsApiError as error:
@@ -395,11 +537,22 @@ def main(argv: list[str] | None = None) -> int:
                 )
             payload = report.as_dict()
             payload["bcs_trade_checks"] = [check.as_dict() for check in checks]
+            payload["bond_income"] = bond_income_as_dict(
+                session.bond_income_summary
+            )
+            dynamics = PortfolioAssetDynamicsAnalyzer(MoexIssClient()).analyze(
+                snapshot,
+                bonds,
+            )
+            payload["asset_dynamics"] = dynamics.as_dict()
             try:
                 rate_report = BondRateModel(
                     RateScenarioPolicy.from_toml(POLICY_FILE)
                 ).analyze(bonds, CbrKeyRateClient().fetch())
                 payload["rate_model"] = rate_report.as_dict()
+                payload["bond_income"]["forward_market_estimate"] = (
+                    _forward_bond_income(report, rate_report)
+                )
             except CbrKeyRateError as error:
                 rate_report = None
                 payload["rate_model"] = {"status": "UNAVAILABLE", "error": str(error)}
@@ -545,6 +698,48 @@ def _build_manager_report(snapshot, *, buy_availability=None):
     return investment_policy, audit, bonds, manager, report
 
 
+def _apply_bcs_manager_constraints(
+    manager,
+    report,
+    audit,
+    bonds,
+    bcs,
+    access_token,
+    *,
+    include_planned_sale_proceeds=True,
+    cash_override_rub=None,
+    excluded_buy_isins=None,
+):
+    verifier = BcsTradeVerifier(bcs)
+    preliminary_checks = verifier.verify_manager_actions(
+        report,
+        access_token,
+        include_unallocated_buys=True,
+    )
+    excluded = set() if excluded_buy_isins is None else excluded_buy_isins
+    constrained = manager.apply_bcs_buy_availability(
+        report,
+        audit,
+        bonds,
+        {
+            check.isin
+            for check in preliminary_checks
+            if check.side is Side.BUY and check.broker_catalog_available
+        }
+        - excluded,
+        include_planned_sale_proceeds=include_planned_sale_proceeds,
+        cash_override_rub=cash_override_rub,
+        buy_lot_cost_rub={
+            check.isin: lot_cost
+            for check in preliminary_checks
+            if check.side is Side.BUY
+            and (lot_cost := _bcs_buy_lot_cost(check)) is not None
+        },
+    )
+    checks = verifier.verify_manager_actions(constrained, access_token)
+    return constrained, checks
+
+
 def _bcs_buy_available_isins(bcs, access_token, isins) -> set[str]:
     available: set[str] = set()
     batch_size = 50
@@ -635,6 +830,272 @@ def _estimate_bond_action(check) -> tuple[int, int, Decimal, Decimal] | None:
         return None
     units = lots * check.lot_size
     return lots, units, price, dirty_unit_cost * units
+
+
+def _bcs_buy_lot_cost(check) -> Decimal | None:
+    if (
+        check.offer is None
+        or check.face_value is None
+        or check.accrued_interest is None
+        or check.lot_size is None
+        or check.lot_size <= 0
+    ):
+        return None
+    dirty_unit_cost = (
+        check.face_value * check.offer / Decimal("100")
+        + check.accrued_interest
+    )
+    if dirty_unit_cost <= 0:
+        return None
+    return dirty_unit_cost * check.lot_size
+
+
+def _buy_bond_details(proposal) -> list[dict[str, object]]:
+    moex = MoexIssClient()
+    details: list[dict[str, object]] = []
+    for order in proposal.orders:
+        if order.side is not Side.BUY:
+            continue
+        isin = order.instrument_uid.rsplit(":", 1)[-1]
+        bond = moex.fetch_bond(isin)
+        schedule = moex.fetch_bond_schedule(isin)
+        market = bond.market
+        today = schedule.fetched_at.date()
+        coupons = [
+            coupon for coupon in schedule.coupons if coupon.coupon_date >= today
+        ]
+        amortizations = [
+            item
+            for item in schedule.amortizations
+            if item.amortization_date >= today
+        ]
+        next_coupon = coupons[0] if coupons else None
+        coupon_window_end = today + timedelta(days=365)
+        coupons_next_12m = [
+            coupon
+            for coupon in coupons
+            if coupon.coupon_date <= coupon_window_end
+        ]
+        amortizations_next_12m = [
+            item
+            for item in amortizations
+            if item.amortization_date <= coupon_window_end
+        ]
+        coupon_per_unit = bond.facts.coupon_value
+        if coupon_per_unit is None and next_coupon is not None:
+            coupon_per_unit = next_coupon.value_rub or next_coupon.value
+        frequency = bond.facts.coupon_frequency
+        annual_coupon_per_unit = (
+            None
+            if coupon_per_unit is None or frequency is None
+            else coupon_per_unit * frequency
+        )
+        face_value = bond.facts.face_value
+        dirty_per_unit = order.estimated_cash_rub / Decimal(order.quantity_units)
+        clean_per_unit = (
+            None
+            if face_value is None
+            else face_value * order.limit_price / Decimal("100")
+        )
+        accrued_per_unit = (
+            None
+            if clean_per_unit is None
+            else dirty_per_unit - clean_per_unit
+        )
+        details.append(
+            {
+                "isin": isin,
+                "name": bond.facts.name,
+                "quantity_units": order.quantity_units,
+                "current_face_value_rub": _decimal_or_none(face_value),
+                "clean_price_percent_of_face": format(order.limit_price, "f"),
+                "clean_price_rub_per_unit": _decimal_or_none(clean_per_unit),
+                "accrued_income_rub_per_unit": _decimal_or_none(accrued_per_unit),
+                "dirty_price_rub_per_unit": format(dirty_per_unit, "f"),
+                "dirty_purchase_cash_rub": format(order.estimated_cash_rub, "f"),
+                "coupon_rate_percent": _decimal_or_none(
+                    bond.facts.coupon_percent
+                ),
+                "coupon_rub_per_unit": _decimal_or_none(coupon_per_unit),
+                "coupon_payments_per_year": frequency,
+                "next_coupon_date": (
+                    None
+                    if next_coupon is None
+                    else next_coupon.coupon_date.isoformat()
+                ),
+                "next_coupon_cash_for_order_rub": (
+                    None
+                    if coupon_per_unit is None
+                    else format(
+                        coupon_per_unit * order.quantity_units,
+                        "f",
+                    )
+                ),
+                "annual_coupon_cash_for_order_rub": (
+                    None
+                    if annual_coupon_per_unit is None
+                    else format(
+                        annual_coupon_per_unit * order.quantity_units,
+                        "f",
+                    )
+                ),
+                "scheduled_coupon_cash_next_12m_for_order_rub": format(
+                    sum(
+                        (
+                            (coupon.value_rub or coupon.value or Decimal("0"))
+                            * order.quantity_units
+                            for coupon in coupons_next_12m
+                        ),
+                        Decimal("0"),
+                    ),
+                    "f",
+                ),
+                "scheduled_principal_cash_next_12m_for_order_rub": format(
+                    sum(
+                        (
+                            (item.value_rub or item.value or Decimal("0"))
+                            * order.quantity_units
+                            for item in amortizations_next_12m
+                        ),
+                        Decimal("0"),
+                    ),
+                    "f",
+                ),
+                "effective_yield_percent": _decimal_or_none(
+                    None if market is None else market.effective_yield_percent
+                ),
+                "duration_days": _decimal_or_none(
+                    None if market is None else market.duration_days
+                ),
+                "maturity_date": (
+                    None
+                    if bond.facts.maturity_date is None
+                    else bond.facts.maturity_date.isoformat()
+                ),
+                "offer_date": (
+                    None
+                    if bond.facts.offer_date is None
+                    else bond.facts.offer_date.isoformat()
+                ),
+                "next_coupons": [
+                    {
+                        "date": coupon.coupon_date.isoformat(),
+                        "rub_per_unit": _decimal_or_none(
+                            coupon.value_rub or coupon.value
+                        ),
+                    }
+                    for coupon in coupons[:3]
+                ],
+                "next_amortizations": [
+                    {
+                        "date": item.amortization_date.isoformat(),
+                        "rub_per_unit": _decimal_or_none(
+                            item.value_rub or item.value
+                        ),
+                        "percent_of_initial_face": _decimal_or_none(
+                            item.value_percent
+                        ),
+                    }
+                    for item in amortizations[:3]
+                ],
+                "sources": {
+                    "security": bond.facts.source_url,
+                    "market": None if market is None else market.source_url,
+                    "schedule": schedule.source_url,
+                },
+                "limitations": [
+                    "Coupon schedule may change for floaters or after issuer actions.",
+                    "Effective yield is annualized and assumes scheduled payments; taxes, fees and reinvestment are excluded.",
+                ],
+            }
+        )
+    return details
+
+
+def _decimal_or_none(value: Decimal | None) -> str | None:
+    return None if value is None else format(value, "f")
+
+
+def _public_order_list_payload(payload: dict[str, object]) -> dict[str, object]:
+    hidden = {
+        "proposal_id",
+        "proposal_digest",
+        "portfolio_snapshot_digest",
+        "created_at",
+        "expires_at",
+        "confirmation_examples",
+        "confirmation_mode",
+        "broker_executor_available",
+    }
+    public = {key: value for key, value in payload.items() if key not in hidden}
+    public["orders"] = [
+        {
+            key: value
+            for key, value in order.items()
+            if key not in {"quote_observed_at", "order_valid_until"}
+        }
+        for order in payload.get("orders", [])
+    ]
+    public["state"] = "AWAITING_USER_DECISION"
+    return public
+
+
+def _forward_bond_income(report, rate_report) -> dict[str, object]:
+    comparable_value = (
+        report.bond_value_rub * report.comparable_yield_coverage_share
+    )
+    comparable_income = Decimal("0")
+    if report.current_comparable_bond_yield_percent is not None:
+        comparable_income = (
+            comparable_value
+            * report.current_comparable_bond_yield_percent
+            / Decimal("100")
+        )
+    decision_values = {
+        decision.isin: decision.market_value_rub for decision in report.decisions
+    }
+    scenarios: dict[str, dict[str, object]] = {}
+    for sensitivity in rate_report.bonds:
+        if sensitivity.model_type != "KEY_RATE_FLOATER":
+            continue
+        value = decision_values.get(sensitivity.isin, Decimal("0"))
+        for scenario in sensitivity.scenarios:
+            carry = scenario.projected_coupon_or_carry_percent
+            if carry is None:
+                continue
+            bucket = scenarios.setdefault(
+                scenario.code,
+                {
+                    "label": scenario.label,
+                    "gross_annual_rub": comparable_income,
+                },
+            )
+            bucket["gross_annual_rub"] = (
+                bucket["gross_annual_rub"]
+                + value * carry / Decimal("100")
+            )
+    normalized: dict[str, dict[str, str]] = {}
+    for code, bucket in scenarios.items():
+        gross = bucket["gross_annual_rub"]
+        assert isinstance(gross, Decimal)
+        normalized[code] = {
+            "label": str(bucket["label"]),
+            "gross_annual_rub": format(gross, "f"),
+            "gross_annual_percent_of_bond_value": (
+                "0"
+                if report.bond_value_rub == 0
+                else format(gross / report.bond_value_rub * Decimal("100"), "f")
+            ),
+        }
+    return {
+        "comparable_fixed_bond_value_rub": format(comparable_value, "f"),
+        "comparable_fixed_gross_annual_rub": format(comparable_income, "f"),
+        "scenarios": normalized,
+        "limitations": [
+            "Market yield and floater carry are forward-looking annualized estimates, not realized profit.",
+            "Taxes, broker fees, defaults, calls, reinvestment and future spread changes are excluded.",
+        ],
+    }
 
 
 if __name__ == "__main__":

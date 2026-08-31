@@ -35,6 +35,12 @@ Russian portfolio report or recommendation in the conversation.
    escalated issuer review where that evidence can change the decision. Never
    treat standalone RAS as consolidated group reporting; keep absent or
    access-restricted statements explicit.
+   For an escalated issuer review, run
+   `uv run invest-agent disclosures --format json` to locate issuer-filed
+   consolidated reports and emission documents using the exact issuer INN and
+   exact MOEX issue registration number. A located file proves only that the
+   document exists: do not infer covenants, security, guarantees or group support
+   until its contents are parsed and cited.
    Treat public data as possibly delayed and use its timestamps. A broad rating
    band is a diagnostic mapping, not a PD estimate or a cross-agency score.
 4. If the read-only token file is not configured, create a mode-600 carrier

@@ -25,6 +25,7 @@ from invest_agent.trade_proposal import (
     LocalTradeGateStore,
     TradeProposalPolicy,
     proposal_as_dict,
+    validate_semantic_confirmation,
 )
 from test_manager import bond, inputs, rating
 
@@ -151,6 +152,24 @@ def manager_report_and_snapshot():
 
 
 class ExactTradeProposalTests(unittest.TestCase):
+    def test_multiline_confirmation_allows_unrelated_followup_request(self) -> None:
+        normalized = validate_semantic_confirmation(
+            "Подтверждаю выставление обеих предложенных заявок на покупку\n\n"
+            "И убери технический термин из интерфейса"
+        )
+
+        self.assertEqual(
+            normalized,
+            "подтверждаю выставление обеих предложенных заявок на покупку",
+        )
+
+    def test_multiline_confirmation_rejects_later_trade_negation(self) -> None:
+        with self.assertRaisesRegex(ApprovalViolation, "contradicts"):
+            validate_semantic_confirmation(
+                "Подтверждаю выставление обеих предложенных заявок на покупку\n\n"
+                "Но покупки не выставляй"
+            )
+
     def test_builds_one_digest_for_multiple_exact_orders(self) -> None:
         second_isin = "RU000A000003"
         first = bond(ISIN, emitter_id=2, value="20000", yield_percent="28")
@@ -230,9 +249,9 @@ class ExactTradeProposalTests(unittest.TestCase):
 
         order = proposal.orders[0]
         self.assertEqual(order.limit_price, Decimal("99.90"))
-        self.assertEqual(order.lots, 20)
-        self.assertEqual(order.quantity_units, 20)
-        self.assertEqual(order.estimated_cash_rub, Decimal("20180.00"))
+        self.assertEqual(order.lots, 21)
+        self.assertEqual(order.quantity_units, 21)
+        self.assertEqual(order.estimated_cash_rub, Decimal("21189.00"))
         self.assertEqual(proposal.expires_at, NOW + timedelta(minutes=10))
         self.assertEqual(order.order_valid_until, NOW + timedelta(hours=1))
         self.assertEqual(len(proposal.digest), 64)
@@ -402,7 +421,7 @@ class ExactTradeProposalTests(unittest.TestCase):
         self.assertTrue(examples)
         self.assertTrue(all("пакет" not in example.casefold() for example in examples))
 
-    def test_caps_lots_to_displayed_units_at_limit_price(self) -> None:
+    def test_resting_limit_keeps_full_lots_beyond_displayed_units(self) -> None:
         policy, report, snapshot = manager_report_and_snapshot()
         client = FakeBcsClient()
         original = client.fetch_order_book
@@ -428,8 +447,8 @@ class ExactTradeProposalTests(unittest.TestCase):
             side=Side.SELL,
         )
 
-        self.assertEqual(proposal.orders[0].lots, 5)
-        self.assertEqual(proposal.orders[0].quantity_units, 5)
+        self.assertEqual(proposal.orders[0].lots, 21)
+        self.assertEqual(proposal.orders[0].quantity_units, 21)
 
 
 if __name__ == "__main__":

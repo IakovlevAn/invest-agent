@@ -12,7 +12,7 @@ import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from decimal import ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -74,7 +74,7 @@ class ManagerPolicy:
                 )
                 for band in RatingBand
             ),
-            minimum_allocation_rub=_positive_decimal(
+            minimum_allocation_rub=_nonnegative_decimal(
                 raw["minimum_allocation_rub"],
                 "manager.minimum_allocation_rub",
             ),
@@ -86,7 +86,7 @@ class ManagerPolicy:
                 raw["maximum_single_purchase_share_of_cash"],
                 "manager.maximum_single_purchase_share_of_cash",
             ),
-            minimum_cash_reserve_rub=_positive_decimal(
+            minimum_cash_reserve_rub=_nonnegative_decimal(
                 raw["minimum_cash_reserve_rub"],
                 "manager.minimum_cash_reserve_rub",
             ),
@@ -146,8 +146,11 @@ class BondManagerDecision:
     stress_loss_fraction: Decimal
     comparable_yield_percent: Decimal | None
     duration_days: Decimal | None
+    estimated_unit_value_rub: Decimal
+    available_units: Decimal
     recommended_add_rub: Decimal
     recommended_reduce_rub: Decimal
+    recommended_reduce_units: int
     reasons: tuple[str, ...]
     exit_triggers: tuple[str, ...]
     credit_warning: bool = False
@@ -432,6 +435,10 @@ class PortfolioManager:
         audit: PortfolioAudit,
         bonds: BondMarketReport,
         available_buy_isins: set[str],
+        *,
+        include_planned_sale_proceeds: bool = True,
+        cash_override_rub: Decimal | None = None,
+        buy_lot_cost_rub: dict[str, Decimal] | None = None,
     ) -> PortfolioManagerReport:
         decisions = [
             replace(
@@ -468,12 +475,19 @@ class PortfolioManager:
             for candidate in report.new_bond_candidates
             if candidate.isin in available_buy_isins
         ]
+        base_cash = report.cash_rub if cash_override_rub is None else cash_override_rub
         decisions, candidates = self._allocate_cash(
             decisions,
             candidates,
             bonds,
-            report.cash_rub + _planned_sale_proceeds(decisions),
+            base_cash
+            + (
+                _planned_sale_proceeds(decisions)
+                if include_planned_sale_proceeds
+                else Decimal("0")
+            ),
             report.managed_value_rub,
+            buy_lot_cost_rub=buy_lot_cost_rub,
         )
         scenarios = self._scenarios(
             audit,
@@ -484,6 +498,9 @@ class PortfolioManager:
         )
         return replace(
             report,
+            cash_rub=base_cash,
+            managed_value_rub=report.managed_value_rub + base_cash - report.cash_rub,
+            total_value_rub=report.total_value_rub + base_cash - report.cash_rub,
             decisions=tuple(sorted(decisions, key=_decision_sort_key)),
             new_bond_candidates=tuple(
                 sorted(
@@ -605,8 +622,15 @@ class PortfolioManager:
             stress_loss_fraction=stress_loss_fraction,
             comparable_yield_percent=comparable_yield,
             duration_days=duration,
+            estimated_unit_value_rub=(
+                Decimal("0")
+                if record.position.quantity <= 0
+                else record.position.market_value_rub / record.position.quantity
+            ),
+            available_units=record.position.available_quantity,
             recommended_add_rub=Decimal("0"),
             recommended_reduce_rub=Decimal("0"),
+            recommended_reduce_units=0,
             reasons=tuple(dict.fromkeys(reasons)),
             exit_triggers=tuple(exits),
             credit_warning=has_credit_warning,
@@ -681,12 +705,25 @@ class PortfolioManager:
                     if decision.stress_loss_fraction <= 0
                     else stress_remaining / decision.stress_loss_fraction
                 )
+                required_reduction = max(concentration_remaining, stress_driven)
+                available_units = int(
+                    decision.available_units.to_integral_value(rounding=ROUND_FLOOR)
+                )
+                if decision.estimated_unit_value_rub <= 0 or available_units <= 0:
+                    continue
+                reduction_units = min(
+                    available_units,
+                    int(
+                        (
+                            required_reduction / decision.estimated_unit_value_rub
+                        ).to_integral_value(rounding=ROUND_CEILING)
+                    ),
+                )
+                if reduction_units <= 0:
+                    continue
                 reduction = min(
                     decision.market_value_rub,
-                    _round_up(
-                        max(concentration_remaining, stress_driven),
-                        self._manager_policy.allocation_rounding_rub,
-                    ),
+                    decision.estimated_unit_value_rub * reduction_units,
                 )
                 if reduction < self._manager_policy.minimum_allocation_rub:
                     continue
@@ -714,6 +751,7 @@ class PortfolioManager:
                     decision,
                     action=ManagerAction.REDUCE_RISK,
                     recommended_reduce_rub=reduction,
+                    recommended_reduce_units=reduction_units,
                     reasons=tuple(dict.fromkeys(reasons)),
                 )
                 concentration_remaining = max(
@@ -732,6 +770,8 @@ class PortfolioManager:
         bonds: BondMarketReport,
         cash_rub: Decimal,
         managed_value_rub: Decimal,
+        *,
+        buy_lot_cost_rub: dict[str, Decimal] | None = None,
     ) -> tuple[list[BondManagerDecision], list[NewBondManagerDecision]]:
         remaining = max(
             Decimal("0"),
@@ -764,10 +804,17 @@ class PortfolioManager:
             exposure.emitter_id: exposure.value_rub
             for exposure in bonds.issuer_exposures
         }
-        maximum_purchase = _round_down(
-            remaining * self._manager_policy.maximum_single_purchase_share_of_cash,
-            self._manager_policy.allocation_rounding_rub,
+        maximum_purchase = (
+            remaining * self._manager_policy.maximum_single_purchase_share_of_cash
         )
+        existing_minimum_purchase = {
+            record.moex.facts.isin: _round_up(
+                record.position.market_value_rub / record.position.quantity,
+                self._manager_policy.allocation_rounding_rub,
+            )
+            for record in bonds.positions
+            if record.position.quantity > 0
+        }
         maximum_stress_loss = (
             managed_value_rub * self._investment_policy.maximum_drawdown
         )
@@ -783,7 +830,22 @@ class PortfolioManager:
             Decimal("0"),
         )
         allocated_count = 0
+        exact_lot_cost = {} if buy_lot_cost_rub is None else buy_lot_cost_rub
         for _, candidate_type, candidate in candidates:
+            candidate_lot_cost = exact_lot_cost.get(candidate.isin) or (
+                candidate.estimated_lot_cost_rub
+                if isinstance(candidate, NewBondManagerDecision)
+                else existing_minimum_purchase.get(
+                    candidate.isin,
+                    self._manager_policy.allocation_rounding_rub,
+                )
+            )
+            minimum_executable = max(
+                self._manager_policy.minimum_allocation_rub,
+                candidate_lot_cost,
+            )
+            if minimum_executable > remaining:
+                continue
             current_issuer_value = issuer_values.get(candidate.emitter_id, Decimal("0"))
             risk_adjusted_share_limit = _risk_adjusted_issuer_share_limit(
                 self._manager_policy.max_bond_issuer_share_after_add,
@@ -800,10 +862,15 @@ class PortfolioManager:
                 maximum_stress_loss - projected_stress_loss,
             ) / candidate.stress_loss_fraction
             amount = _round_down(
-                min(remaining, capacity, stress_capacity, maximum_purchase),
-                self._manager_policy.allocation_rounding_rub,
+                min(
+                    remaining,
+                    capacity,
+                    stress_capacity,
+                    max(maximum_purchase, minimum_executable),
+                ),
+                minimum_executable,
             )
-            if amount < self._manager_policy.minimum_allocation_rub:
+            if amount < minimum_executable:
                 continue
             if candidate_type == "EXISTING":
                 existing = candidate
@@ -820,7 +887,7 @@ class PortfolioManager:
             remaining -= amount
             allocated_count += 1
             if (
-                remaining < self._manager_policy.minimum_allocation_rub
+                remaining < self._manager_policy.allocation_rounding_rub
                 or allocated_count >= self._manager_policy.maximum_purchase_count
             ):
                 break
@@ -1215,8 +1282,13 @@ def _decision_as_dict(decision: BondManagerDecision) -> dict[str, Any]:
             decision.comparable_yield_percent
         ),
         "duration_days": _optional_decimal_text(decision.duration_days),
+        "estimated_unit_value_rub": _decimal_text(
+            decision.estimated_unit_value_rub
+        ),
+        "available_units": _decimal_text(decision.available_units),
         "recommended_add_rub": _decimal_text(decision.recommended_add_rub),
         "recommended_reduce_rub": _decimal_text(decision.recommended_reduce_rub),
+        "recommended_reduce_units": decision.recommended_reduce_units,
         "credit_warning": decision.credit_warning,
         "reasons": list(decision.reasons),
         "exit_triggers": list(decision.exit_triggers),
@@ -1289,6 +1361,13 @@ def _positive_decimal(value: Any, field: str) -> Decimal:
     result = Decimal(str(value))
     if not result.is_finite() or result <= 0:
         raise ValueError(f"{field} must be positive")
+    return result
+
+
+def _nonnegative_decimal(value: Any, field: str) -> Decimal:
+    result = Decimal(str(value))
+    if not result.is_finite() or result < 0:
+        raise ValueError(f"{field} must be nonnegative")
     return result
 
 
