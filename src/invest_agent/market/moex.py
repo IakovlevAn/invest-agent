@@ -79,6 +79,17 @@ UNIVERSE_SECURITY_COLUMNS = (
     "PREVPRICE",
     "YIELDATPREVWAPRICE",
 )
+HISTORY_COLUMNS = (
+    "TRADEDATE",
+    "SECID",
+    "BOARDID",
+    "LEGALCLOSEPRICE",
+    "CLOSE",
+    "WAPRICE",
+    "MARKETPRICE2",
+    "NUMTRADES",
+    "VALUE",
+)
 
 
 class MoexApiError(RuntimeError):
@@ -272,6 +283,24 @@ class MoexBondSchedule:
     fetched_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class MoexPricePoint:
+    trade_date: date
+    close_price: Decimal
+    trades: int | None
+    turnover_rub: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class MoexPriceHistory:
+    secid: str
+    board_id: str
+    market: str
+    points: tuple[MoexPricePoint, ...]
+    source_url: str
+    fetched_at: datetime
+
+
 class MoexIssClient:
     """Fetch normalized bond and emitter facts from official MOEX ISS."""
 
@@ -404,6 +433,72 @@ class MoexIssClient:
             fetched_at=self._now(),
         )
 
+    def fetch_price_history(
+        self,
+        secid: str,
+        *,
+        board_id: str,
+        market: str,
+        from_date: date,
+    ) -> MoexPriceHistory:
+        normalized_secid = secid.strip().upper()
+        normalized_board = board_id.strip().upper()
+        normalized_market = market.strip().lower()
+        if not normalized_secid or not normalized_board:
+            raise ValueError("secid and board_id are required")
+        if normalized_market not in {"bonds", "shares"}:
+            raise ValueError("market must be bonds or shares")
+        source_url = self._history_url(
+            normalized_secid,
+            board=normalized_board,
+            market=normalized_market,
+            from_date=from_date,
+            start=0,
+        )
+        initial = self._get_json(
+            source_url,
+            operation=f"history:{normalized_secid}:0",
+        )
+        history_rows = _table(initial, "history")
+        cursor = _table(initial, "history.cursor")
+        if len(cursor) == 1:
+            total = _integer(cursor[0].get("TOTAL"))
+            page_size = _integer(cursor[0].get("PAGESIZE"))
+            if total is None or total < 0 or page_size is None or page_size <= 0:
+                raise MoexContractError("MOEX history.cursor values are invalid")
+            for start in range(page_size, total, page_size):
+                page_url = self._history_url(
+                    normalized_secid,
+                    board=normalized_board,
+                    market=normalized_market,
+                    from_date=from_date,
+                    start=start,
+                )
+                page = self._get_json(
+                    page_url,
+                    operation=f"history:{normalized_secid}:{start}",
+                )
+                history_rows.extend(_table(page, "history"))
+        elif cursor:
+            raise MoexContractError("MOEX history.cursor must contain at most one row")
+        parsed_points = tuple(
+            _history_point(
+                row,
+                secid=normalized_secid,
+                board=normalized_board,
+            )
+            for row in history_rows
+        )
+        points = tuple(point for point in parsed_points if point is not None)
+        return MoexPriceHistory(
+            secid=normalized_secid,
+            board_id=normalized_board,
+            market=normalized_market,
+            points=tuple(sorted(points, key=lambda item: item.trade_date)),
+            source_url=source_url,
+            fetched_at=self._now(),
+        )
+
     def _all_bondization_rows(
         self,
         initial: Mapping[str, Any],
@@ -512,6 +607,32 @@ class MoexIssClient:
             query[f"{table}.start"] = start
         encoded = urllib.parse.urlencode(query)
         return f"{BONDIZATION_BASE_URL}/{urllib.parse.quote(secid, safe='')}.json?{encoded}"
+
+    @staticmethod
+    def _history_url(
+        secid: str,
+        *,
+        board: str,
+        market: str,
+        from_date: date,
+        start: int,
+    ) -> str:
+        query = urllib.parse.urlencode(
+            {
+                "iss.meta": "off",
+                "iss.only": "history,history.cursor",
+                "from": from_date.isoformat(),
+                "limit": 100,
+                "start": start,
+                "history.columns": ",".join(HISTORY_COLUMNS),
+            }
+        )
+        return (
+            f"{ISS_BASE_URL}/history/engines/stock/markets/"
+            f"{urllib.parse.quote(market, safe='')}/boards/"
+            f"{urllib.parse.quote(board, safe='')}/securities/"
+            f"{urllib.parse.quote(secid, safe='')}.json?{query}"
+        )
 
 
 def _description(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -628,6 +749,37 @@ def _market_data(
         trade_moment=_datetime(yields.get("TRADEMOMENT")),
         system_moment=_first_datetime(yields.get("SYSTIME"), market.get("SYSTIME")),
         source_url=source_url,
+    )
+
+
+def _history_point(
+    row: Mapping[str, Any],
+    *,
+    secid: str,
+    board: str,
+) -> MoexPricePoint | None:
+    returned_secid = _required_text(row.get("SECID"), "history.SECID").upper()
+    if returned_secid != secid:
+        raise MoexContractError(f"MOEX history SECID mismatch for {secid}")
+    returned_board = _optional_text(row.get("BOARDID"))
+    if returned_board is not None and returned_board.upper() != board:
+        raise MoexContractError(f"MOEX history BOARDID mismatch for {secid}")
+    close_price = _first_decimal(
+        row.get("LEGALCLOSEPRICE"),
+        row.get("CLOSE"),
+        row.get("WAPRICE"),
+        row.get("MARKETPRICE2"),
+    )
+    if close_price is None or close_price <= 0:
+        return None
+    trade_date = _date(row.get("TRADEDATE"))
+    if trade_date is None:
+        raise MoexContractError(f"MOEX history {secid} has no trade date")
+    return MoexPricePoint(
+        trade_date=trade_date,
+        close_price=close_price,
+        trades=_integer(row.get("NUMTRADES")),
+        turnover_rub=_decimal(row.get("VALUE")),
     )
 
 

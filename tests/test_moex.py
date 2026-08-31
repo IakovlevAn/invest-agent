@@ -42,6 +42,54 @@ class FakeTransport:
 
 
 class MoexIssClientTests(unittest.TestCase):
+    def test_reads_price_history_for_exact_board(self) -> None:
+        payload = {
+            "history": {
+                "columns": [
+                    "TRADEDATE",
+                    "SECID",
+                    "BOARDID",
+                    "LEGALCLOSEPRICE",
+                    "CLOSE",
+                    "WAPRICE",
+                    "MARKETPRICE2",
+                    "NUMTRADES",
+                    "VALUE",
+                ],
+                "data": [[
+                    "2026-08-01",
+                    "RU000A10TEST",
+                    "TQCB",
+                    98.5,
+                    None,
+                    98.4,
+                    98.3,
+                    12,
+                    150000,
+                ]],
+            },
+            "history.cursor": {
+                "columns": ["INDEX", "TOTAL", "PAGESIZE"],
+                "data": [[0, 1, 100]],
+            },
+        }
+        transport = FakeTransport([response(200, payload)])
+        client = MoexIssClient(transport=transport, now=lambda: NOW)
+
+        history = client.fetch_price_history(
+            "ru000a10test",
+            board_id="tqcb",
+            market="bonds",
+            from_date=NOW.date(),
+        )
+
+        self.assertEqual(len(history.points), 1)
+        self.assertEqual(history.points[0].close_price, Decimal("98.5"))
+        parsed = urllib.parse.urlparse(transport.calls[0]["url"])  # type: ignore[arg-type]
+        self.assertIn("/markets/bonds/boards/TQCB/", parsed.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        self.assertIn("LEGALCLOSEPRICE", query["history.columns"][0])
+
     def test_reads_compact_bond_universe_and_estimates_lot_cost(self) -> None:
         payload = {
             "securities": {

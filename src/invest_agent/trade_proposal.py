@@ -47,6 +47,7 @@ class TradeProposalPolicy:
     proposal_ttl_seconds: int
     order_validity_seconds: int
     maximum_quote_age_seconds: int
+    allow_resting_limit_orders_without_depth: bool
 
     @classmethod
     def from_toml(cls, path: str | Path) -> TradeProposalPolicy:
@@ -56,6 +57,9 @@ class TradeProposalPolicy:
             proposal_ttl_seconds=int(trading["approval_ttl_seconds"]),
             order_validity_seconds=int(trading["order_validity_seconds"]),
             maximum_quote_age_seconds=int(trading["maximum_quote_age_seconds"]),
+            allow_resting_limit_orders_without_depth=bool(
+                trading["allow_resting_limit_orders_without_depth"]
+            ),
         )
         if min(
             policy.proposal_ttl_seconds,
@@ -114,12 +118,14 @@ class ExactTradeProposalBuilder:
         access_token: BcsAccessToken,
         isin: str,
         side: Side,
+        available_cash_rub: Decimal | None = None,
     ) -> ProposalBundle:
         return self.build_manager_actions(
             report=report,
             snapshot=snapshot,
             access_token=access_token,
             actions=((isin, side),),
+            available_cash_rub=available_cash_rub,
         )
 
     def build_manager_actions(
@@ -129,6 +135,7 @@ class ExactTradeProposalBuilder:
         snapshot: PortfolioSnapshot,
         access_token: BcsAccessToken,
         actions: tuple[tuple[str, Side], ...],
+        available_cash_rub: Decimal | None = None,
     ) -> ProposalBundle:
         if report.snapshot_digest != snapshot.digest:
             raise TradeProposalError("manager report and live portfolio snapshot do not match")
@@ -171,6 +178,13 @@ class ExactTradeProposalBuilder:
             for isin, instrument in by_isin.items()
         }
         created_at = self._now()
+        available_cash = (
+            snapshot.cash_rub
+            if available_cash_rub is None
+            else available_cash_rub
+        )
+        if available_cash < 0:
+            raise TradeProposalError("available cash cannot be negative")
         orders = tuple(
             self._exact_order(
                 snapshot=snapshot,
@@ -179,6 +193,7 @@ class ExactTradeProposalBuilder:
                 order_book=books[isin],
                 side=side,
                 target_amount_rub=target_amount,
+                available_cash_rub=available_cash,
                 created_at=created_at,
             )
             for isin, side, target_amount, _ in targets
@@ -187,7 +202,7 @@ class ExactTradeProposalBuilder:
             (order.estimated_cash_rub for order in orders if order.side is Side.BUY),
             start=Decimal("0"),
         )
-        if total_buy_cash > snapshot.cash_rub:
+        if total_buy_cash > available_cash:
             raise TradeProposalError("exact proposed purchases exceed current free cash")
         projected_return = _projected_return(
             report,
@@ -235,6 +250,7 @@ class ExactTradeProposalBuilder:
         order_book: BcsOrderBook,
         side: Side,
         target_amount_rub: Decimal,
+        available_cash_rub: Decimal,
         created_at: datetime,
     ) -> OrderIntent:
         blockers: list[str] = []
@@ -262,11 +278,19 @@ class ExactTradeProposalBuilder:
             blockers.append("BCS order book does not match the resolved instrument")
         quote_moment = max(quote.observed_at, order_book.observed_at)
         age_seconds = (created_at - quote_moment).total_seconds()
-        if age_seconds < -5 or age_seconds > self._proposal_policy.maximum_quote_age_seconds:
+        if (
+            not self._proposal_policy.allow_resting_limit_orders_without_depth
+            and (
+                age_seconds < -5
+                or age_seconds > self._proposal_policy.maximum_quote_age_seconds
+            )
+        ):
             blockers.append("BCS quote/order book is stale for an exact proposal")
         raw_price = order_book.best_offer if side is Side.BUY else order_book.best_bid
         if raw_price is None:
-            blockers.append("BCS order book has no executable top-of-book price")
+            raw_price = quote.offer if side is Side.BUY else quote.bid
+        if raw_price is None:
+            blockers.append("BCS has no quote for the requested limit side")
         if instrument.minimum_step <= 0:
             blockers.append("BCS minimum price step is invalid")
         if instrument.face_value <= 0 or instrument.lot_size <= 0:
@@ -316,27 +340,30 @@ class ExactTradeProposalBuilder:
             if requested_lots <= 0:
                 raise TradeProposalError("target amount is smaller than one BCS lot")
             affordable_lots = int(
-                (snapshot.cash_rub / dirty_lot_value).to_integral_value(rounding=ROUND_FLOOR)
+                (available_cash_rub / dirty_lot_value).to_integral_value(
+                    rounding=ROUND_FLOOR
+                )
             )
             lots = min(requested_lots, affordable_lots)
             if lots <= 0:
                 raise TradeProposalError("free cash is insufficient for one BCS lot")
 
-        executable_units = sum(
-            level.quantity
-            for level in (order_book.asks if side is Side.BUY else order_book.bids)
-            if (
-                level.price <= limit_price
-                if side is Side.BUY
-                else level.price >= limit_price
+        if not self._proposal_policy.allow_resting_limit_orders_without_depth:
+            executable_units = sum(
+                level.quantity
+                for level in (order_book.asks if side is Side.BUY else order_book.bids)
+                if (
+                    level.price <= limit_price
+                    if side is Side.BUY
+                    else level.price >= limit_price
+                )
             )
-        )
-        executable_lots = executable_units // instrument.lot_size
-        lots = min(lots, executable_lots)
-        if lots <= 0:
-            raise TradeProposalError(
-                "BCS order book has less than one full lot at the limit price"
-            )
+            executable_lots = executable_units // instrument.lot_size
+            lots = min(lots, executable_lots)
+            if lots <= 0:
+                raise TradeProposalError(
+                    "BCS order book has less than one full lot at the limit price"
+                )
 
         estimated_cash = dirty_lot_value * lots
         return OrderIntent(
@@ -602,10 +629,25 @@ def proposal_as_dict(proposal: ProposalBundle) -> dict[str, Any]:
 def validate_semantic_confirmation(user_message: str) -> str:
     if not isinstance(user_message, str):
         raise ApprovalViolation("semantic confirmation must be text")
-    normalized = unicodedata.normalize("NFKC", user_message).casefold().replace("ё", "е")
-    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized_full = (
+        unicodedata.normalize("NFKC", user_message).casefold().replace("ё", "е")
+    )
+    lines = [re.sub(r"\s+", " ", line).strip() for line in normalized_full.splitlines()]
+    lines = [line for line in lines if line]
+    normalized = " ".join(lines)
     if not normalized or len(normalized) > 500:
         raise ApprovalViolation("semantic confirmation is empty or unexpectedly long")
+    if len(lines) > 1:
+        unrelated = " ".join(lines[1:])
+        trade_terms = r"(?:заяв\w*|покуп\w*|продаж\w*|сделк\w*|выстав\w*|исполн\w*)"
+        negative_terms = r"(?:не|нет|без|отмен\w*|стоп|позже|потом|если|когда)"
+        if re.search(
+            rf"(?:{negative_terms}.{{0,40}}{trade_terms}|"
+            rf"{trade_terms}.{{0,40}}{negative_terms})",
+            unrelated,
+        ):
+            raise ApprovalViolation("later text contradicts the trade confirmation")
+        normalized = lines[0]
     if "?" in normalized:
         raise ApprovalViolation("a question cannot authorize a trade")
     if re.search(r"\d", normalized):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
+from typing import Any
 
 from invest_agent.brokers.bcs import BcsAccessToken, BcsReadClient
 from invest_agent.domain import PortfolioSnapshot
@@ -14,11 +16,15 @@ from invest_agent.secrets import RefreshTokenStore
 class PortfolioReadSession:
     snapshot: PortfolioSnapshot
     access_token: BcsAccessToken
+    cash_by_settlement_term_rub: tuple[tuple[str, Decimal], ...]
+    bond_income_summary: dict[str, Any]
 
     def __repr__(self) -> str:
         return (
             "PortfolioReadSession(snapshot="
-            f"{self.snapshot.account_ref!r}, access_token=<redacted>)"
+            f"{self.snapshot.account_ref!r}, access_token=<redacted>, "
+            "cash_by_settlement_term_rub=<redacted>, "
+            "bond_income_summary=<redacted>)"
         )
 
 
@@ -48,4 +54,11 @@ class PortfolioReader:
         self._token_store.set(token_pair.refresh_token)
         raw_portfolio = self._client.fetch_raw_portfolio(token_pair.access_token)
         snapshot = self._normalizer.normalize(raw_portfolio, is_iis=self._is_iis)
-        return PortfolioReadSession(snapshot=snapshot, access_token=token_pair.access_token)
+        cash_by_term = self._normalizer.cash_by_settlement_term(raw_portfolio)
+        bond_income = self._normalizer.bond_income_summary(raw_portfolio)
+        return PortfolioReadSession(
+            snapshot=snapshot,
+            access_token=token_pair.access_token,
+            cash_by_settlement_term_rub=tuple(cash_by_term.items()),
+            bond_income_summary=bond_income,
+        )

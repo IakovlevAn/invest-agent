@@ -266,6 +266,111 @@ class PortfolioManagerTests(unittest.TestCase):
             now=lambda: NOW,
         )
 
+    def test_policy_has_no_arbitrary_minimum_allocation(self) -> None:
+        policy = ManagerPolicy.from_toml(POLICY_PATH)
+
+        self.assertEqual(policy.minimum_allocation_rub, Decimal("0"))
+        self.assertEqual(
+            policy.maximum_single_purchase_share_of_cash,
+            Decimal("1.0"),
+        )
+        self.assertEqual(policy.minimum_cash_reserve_rub, Decimal("0"))
+
+    def test_risk_reduction_is_rounded_to_one_whole_position_unit(self) -> None:
+        warning = CreditSignal(
+            "RATING_DOWNGRADE",
+            SignalSeverity.WARNING,
+            "рейтинг понижен",
+        )
+        risky = bond("RU000A000001", emitter_id=1, value="15100", yield_percent="30")
+        stabilizer = bond("RU000A000002", emitter_id=2, value="84900", yield_percent="18")
+        audit, bonds, credit = inputs(
+            (risky, stabilizer),
+            (
+                rating(
+                    "RU000A000001",
+                    emitter_id=1,
+                    band=RatingBand.ADEQUATE,
+                    signal=warning,
+                ),
+                rating("RU000A000002", emitter_id=2, band=RatingBand.HIGHEST),
+            ),
+        )
+
+        manager = PortfolioManager(
+            InvestmentPolicy.from_toml(POLICY_PATH),
+            replace(manager_policy(), minimum_allocation_rub=Decimal("0")),
+            now=lambda: NOW,
+        )
+        report = manager.recommend(audit, bonds, credit)
+        decision = next(
+            item for item in report.decisions if item.isin == "RU000A000001"
+        )
+
+        self.assertEqual(decision.recommended_reduce_units, 1)
+        self.assertEqual(decision.recommended_reduce_rub, Decimal("1510"))
+
+    def test_reinvests_small_cash_above_reserve_in_one_executable_lot(self) -> None:
+        candidate = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")
+        stabilizer = bond("RU000A000002", emitter_id=2, value="90000", yield_percent="18")
+        audit, bonds, credit = inputs(
+            (candidate, stabilizer),
+            (
+                rating("RU000A000001", emitter_id=1, band=RatingBand.ADEQUATE),
+                rating("RU000A000002", emitter_id=2, band=RatingBand.HIGHEST),
+            ),
+            cash="3000",
+        )
+        manager = PortfolioManager(
+            InvestmentPolicy.from_toml(POLICY_PATH),
+            replace(
+                manager_policy(),
+                minimum_allocation_rub=Decimal("0"),
+                minimum_cash_reserve_rub=Decimal("2000"),
+                maximum_single_purchase_share_of_cash=Decimal("0.30"),
+            ),
+            now=lambda: NOW,
+        )
+
+        report = manager.recommend(audit, bonds, credit)
+        decision = next(
+            item for item in report.decisions if item.isin == "RU000A000001"
+        )
+        scenario = next(
+            item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH"
+        )
+
+        self.assertEqual(decision.recommended_add_rub, Decimal("1000"))
+        self.assertEqual(scenario.remaining_cash_rub, Decimal("2000"))
+
+    def test_does_not_recommend_less_than_one_executable_lot(self) -> None:
+        candidate = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")
+        stabilizer = bond("RU000A000002", emitter_id=2, value="90000", yield_percent="18")
+        audit, bonds, credit = inputs(
+            (candidate, stabilizer),
+            (
+                rating("RU000A000001", emitter_id=1, band=RatingBand.ADEQUATE),
+                rating("RU000A000002", emitter_id=2, band=RatingBand.HIGHEST),
+            ),
+            cash="2500",
+        )
+        manager = PortfolioManager(
+            InvestmentPolicy.from_toml(POLICY_PATH),
+            replace(
+                manager_policy(),
+                minimum_allocation_rub=Decimal("0"),
+                minimum_cash_reserve_rub=Decimal("2000"),
+            ),
+            now=lambda: NOW,
+        )
+
+        report = manager.recommend(audit, bonds, credit)
+        decision = next(
+            item for item in report.decisions if item.isin == "RU000A000001"
+        )
+
+        self.assertEqual(decision.recommended_add_rub, Decimal("0"))
+
     def test_allocates_only_to_clean_target_yield_candidate_with_issuer_cap(self) -> None:
         candidate = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="30")
         stabilizer = bond("RU000A000002", emitter_id=2, value="90000", yield_percent="18")
@@ -281,11 +386,11 @@ class PortfolioManagerTests(unittest.TestCase):
         decisions = {decision.ticker: decision for decision in report.decisions}
 
         self.assertEqual(decisions["RU000A000001"].action, ManagerAction.ADD_CANDIDATE)
-        self.assertEqual(decisions["RU000A000001"].recommended_add_rub, Decimal("5800"))
+        self.assertEqual(decisions["RU000A000001"].recommended_add_rub, Decimal("5000"))
         self.assertEqual(decisions["RU000A000002"].action, ManagerAction.HOLD)
         scenario = next(item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH")
         self.assertTrue(scenario.recommended)
-        self.assertEqual(scenario.invested_cash_rub, Decimal("5800"))
+        self.assertEqual(scenario.invested_cash_rub, Decimal("5000"))
 
     def test_third_level_existing_bond_cannot_be_add_candidate(self) -> None:
         candidate = bond("RU000A000001", emitter_id=1, value="10000", yield_percent="29")
@@ -352,7 +457,7 @@ class PortfolioManagerTests(unittest.TestCase):
         self.assertEqual(decisions["RU000A000002"].action, ManagerAction.URGENT_REVIEW)
         self.assertEqual(decisions["RU000A000003"].action, ManagerAction.REDUCE_RISK)
         speculative_reduction = decisions["RU000A000003"].recommended_reduce_rub
-        self.assertEqual(speculative_reduction, Decimal("17300"))
+        self.assertEqual(speculative_reduction, Decimal("18000"))
         scenario = next(item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH")
         self.assertFalse(scenario.recommended)
         self.assertEqual(report.primary_action, "VERIFY_CRITICAL_FLAG_BEFORE_NEW_RISK")
@@ -388,7 +493,7 @@ class PortfolioManagerTests(unittest.TestCase):
 
         self.assertEqual(
             report.decisions[0].recommended_reduce_rub,
-            Decimal("95500"),
+            Decimal("100000"),
         )
         self.assertIn(
             "сценарный убыток эмитента превышает выделенный ему "
@@ -489,12 +594,12 @@ class PortfolioManagerTests(unittest.TestCase):
 
         self.assertTrue(scenario.recommended)
         self.assertEqual(scenario.invested_cash_rub, Decimal("0"))
-        self.assertEqual(scenario.estimated_sale_proceeds_rub, Decimal("15500"))
-        self.assertEqual(scenario.remaining_cash_rub, Decimal("65500"))
-        self.assertEqual(scenario.net_bond_change_rub, Decimal("-15500"))
+        self.assertEqual(scenario.estimated_sale_proceeds_rub, Decimal("16000"))
+        self.assertEqual(scenario.remaining_cash_rub, Decimal("66000"))
+        self.assertEqual(scenario.net_bond_change_rub, Decimal("-16000"))
         self.assertEqual(
             scenario.projected_bond_share_managed,
-            Decimal("0.5633333333333333333333333333"),
+            Decimal("0.56"),
         )
 
     def test_warning_freezes_addition_and_output_never_creates_orders(self) -> None:
@@ -521,7 +626,7 @@ class PortfolioManagerTests(unittest.TestCase):
 
         self.assertEqual(
             report.decisions[0].recommended_reduce_rub,
-            Decimal("8500"),
+            Decimal("9000"),
         )
 
     def test_allocates_cash_to_ranked_new_issuers_without_creating_orders(self) -> None:
@@ -573,11 +678,11 @@ class PortfolioManagerTests(unittest.TestCase):
 
         self.assertEqual(
             [item.recommended_add_rub for item in report.new_bond_candidates],
-            [Decimal("17600"), Decimal("17600")],
+            [Decimal("15000"), Decimal("15000")],
         )
         scenario = next(item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH")
         self.assertTrue(scenario.recommended)
-        self.assertEqual(scenario.invested_cash_rub, Decimal("35200"))
+        self.assertEqual(scenario.invested_cash_rub, Decimal("30000"))
         self.assertFalse(payload["trade_gate"]["orders_created"])
         self.assertFalse(payload["new_bond_candidates"][0]["bcs_availability_verified"])
 
@@ -591,7 +696,7 @@ class PortfolioManagerTests(unittest.TestCase):
         self.assertEqual(filtered.new_bond_candidates[0].isin, "RU000A000003")
         self.assertEqual(
             filtered.new_bond_candidates[0].recommended_add_rub,
-            Decimal("17600"),
+            Decimal("15000"),
         )
         self.assertTrue(filtered.new_bond_candidates[0].bcs_availability_verified)
 
@@ -604,8 +709,8 @@ class PortfolioManagerTests(unittest.TestCase):
         guarded_scenario = next(
             item for item in guarded.scenarios if item.code == "INVEST_CURRENT_CASH"
         )
-        self.assertEqual(guarded_scenario.invested_cash_rub, Decimal("24000"))
-        self.assertEqual(guarded_scenario.remaining_cash_rub, Decimal("26000"))
+        self.assertEqual(guarded_scenario.invested_cash_rub, Decimal("20000"))
+        self.assertEqual(guarded_scenario.remaining_cash_rub, Decimal("30000"))
 
         limited_manager = PortfolioManager(
             InvestmentPolicy.from_toml(POLICY_PATH),

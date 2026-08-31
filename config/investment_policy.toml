@@ -71,11 +71,15 @@ annual_consolidated_max_age_days = 550
 [manager]
 # Fast recommendation hot path. These are allocation guards, not trade orders.
 max_bond_issuer_share_after_add = 0.15
-minimum_allocation_rub = 5000
+# No arbitrary cash threshold: reinvest whenever at least one executable lot
+# fits above the reserve and all issuer/stress limits remain satisfied.
+minimum_allocation_rub = 0
 allocation_rounding_rub = 100
-maximum_single_purchase_share_of_cash = 0.30
+# Small residual cash should be fully reinvested into the best admissible lot;
+# issuer concentration and portfolio stress remain the binding risk controls.
+maximum_single_purchase_share_of_cash = 1.0
 maximum_purchase_count = 3
-minimum_cash_reserve_rub = 2000
+minimum_cash_reserve_rub = 0
 
 [rate_model]
 # Transparent 12-month sensitivities. Scenario shifts are assumptions, not forecasts.
@@ -125,6 +129,7 @@ explicit_external_approval_required = true
 approval_ttl_seconds = 600
 order_validity_seconds = 3600
 maximum_quote_age_seconds = 60
+allow_resting_limit_orders_without_depth = true
 max_price_drift_bps = 25
 allow_margin = false
 allow_derivatives = false
