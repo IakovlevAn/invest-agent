@@ -104,12 +104,8 @@ def bond(
         offer_percent=None,
         last_percent=Decimal("100"),
         wap_percent=Decimal("100"),
-        yield_at_wap_percent=(
-            None if yield_percent is None else Decimal(yield_percent)
-        ),
-        effective_yield_percent=(
-            None if yield_percent is None else Decimal(yield_percent)
-        ),
+        yield_at_wap_percent=(None if yield_percent is None else Decimal(yield_percent)),
+        effective_yield_percent=(None if yield_percent is None else Decimal(yield_percent)),
         yield_date=date(2029, 1, 1),
         yield_date_type="MATURITY",
         duration_days=Decimal("500"),
@@ -303,9 +299,7 @@ class PortfolioManagerTests(unittest.TestCase):
             now=lambda: NOW,
         )
         report = manager.recommend(audit, bonds, credit)
-        decision = next(
-            item for item in report.decisions if item.isin == "RU000A000001"
-        )
+        decision = next(item for item in report.decisions if item.isin == "RU000A000001")
 
         self.assertEqual(decision.recommended_reduce_units, 1)
         self.assertEqual(decision.recommended_reduce_rub, Decimal("1510"))
@@ -333,12 +327,8 @@ class PortfolioManagerTests(unittest.TestCase):
         )
 
         report = manager.recommend(audit, bonds, credit)
-        decision = next(
-            item for item in report.decisions if item.isin == "RU000A000001"
-        )
-        scenario = next(
-            item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH"
-        )
+        decision = next(item for item in report.decisions if item.isin == "RU000A000001")
+        scenario = next(item for item in report.scenarios if item.code == "INVEST_CURRENT_CASH")
 
         self.assertEqual(decision.recommended_add_rub, Decimal("1000"))
         self.assertEqual(scenario.remaining_cash_rub, Decimal("2000"))
@@ -365,9 +355,7 @@ class PortfolioManagerTests(unittest.TestCase):
         )
 
         report = manager.recommend(audit, bonds, credit)
-        decision = next(
-            item for item in report.decisions if item.isin == "RU000A000001"
-        )
+        decision = next(item for item in report.decisions if item.isin == "RU000A000001")
 
         self.assertEqual(decision.recommended_add_rub, Decimal("0"))
 
@@ -465,9 +453,7 @@ class PortfolioManagerTests(unittest.TestCase):
     def test_speculative_position_is_sized_from_stress_and_concentration_budgets(
         self,
     ) -> None:
-        speculative = bond(
-            "RU000A000001", emitter_id=1, value="100000", yield_percent="28"
-        )
+        speculative = bond("RU000A000001", emitter_id=1, value="100000", yield_percent="28")
         audit, bonds, credit = inputs(
             (speculative,),
             (
@@ -496,8 +482,7 @@ class PortfolioManagerTests(unittest.TestCase):
             Decimal("100000"),
         )
         self.assertIn(
-            "сценарный убыток эмитента превышает выделенный ему "
-            "бюджет стресс-риска",
+            "сценарный убыток эмитента превышает выделенный ему бюджет стресс-риска",
             report.decisions[0].reasons,
         )
 
@@ -719,10 +704,7 @@ class PortfolioManagerTests(unittest.TestCase):
         )
         limited = limited_manager.recommend(audit, bonds, credit, universe)
         self.assertEqual(
-            sum(
-                candidate.recommended_add_rub > 0
-                for candidate in limited.new_bond_candidates
-            ),
+            sum(candidate.recommended_add_rub > 0 for candidate in limited.new_bond_candidates),
             1,
         )
         selected = next(

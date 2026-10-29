@@ -190,9 +190,7 @@ class BondCandidateScreener:
             available_isins = self._buy_availability(
                 tuple(dict.fromkeys(quote.isin for quote in coarse))
             )
-            unavailable_count = sum(
-                quote.isin not in available_isins for quote in coarse
-            )
+            unavailable_count = sum(quote.isin not in available_isins for quote in coarse)
             if unavailable_count:
                 rejection_counts["bcs_buy_unavailable"] += unavailable_count
             coarse = [quote for quote in coarse if quote.isin in available_isins]
@@ -242,13 +240,11 @@ class BondCandidateScreener:
             now=lambda: fetched_at,
         ).analyze(candidate_report)
         failures.extend(
-            f"{failure.ticker}/{failure.stage}: {failure.message}"
-            for failure in credit.failures
+            f"{failure.ticker}/{failure.stage}: {failure.message}" for failure in credit.failures
         )
         passport_by_ticker = {item.ticker: item for item in credit.passports}
         current_shares = {
-            item.emitter_id: item.share_of_covered_bonds
-            for item in current_bonds.issuer_exposures
+            item.emitter_id: item.share_of_covered_bonds for item in current_bonds.issuer_exposures
         }
         candidates: list[BondUniverseCandidate] = []
         for record in records:
@@ -270,10 +266,7 @@ class BondCandidateScreener:
                 signal
                 for signal in passport.signals
                 if signal.severity is SignalSeverity.CRITICAL
-                or (
-                    signal.severity is SignalSeverity.WARNING
-                    and signal.code != "RATING_DOWNGRADE"
-                )
+                or (signal.severity is SignalSeverity.WARNING and signal.code != "RATING_DOWNGRADE")
             ]
             if blocking_signals:
                 rejection_counts["blocking_credit_signal"] += 1
@@ -281,16 +274,13 @@ class BondCandidateScreener:
             downgrade_signals = [
                 signal
                 for signal in passport.signals
-                if signal.severity is SignalSeverity.WARNING
-                and signal.code == "RATING_DOWNGRADE"
+                if signal.severity is SignalSeverity.WARNING and signal.code == "RATING_DOWNGRADE"
             ]
             if downgrade_signals and _band_rank(band) > _band_rank(RatingBand.STRONG):
                 rejection_counts["downgrade_below_A"] += 1
                 continue
-            if (
-                record.moex.facts.list_level == 3
-                and _band_rank(band)
-                > _band_rank(self._policy.third_level_minimum_rating_band)
+            if record.moex.facts.list_level == 3 and _band_rank(band) > _band_rank(
+                self._policy.third_level_minimum_rating_band
             ):
                 rejection_counts["third_level_rating_below_A"] += 1
                 continue
@@ -401,9 +391,7 @@ class BondCandidateScreener:
         ):
             return False
         if duration is None or not (
-            self._policy.minimum_duration_days
-            <= duration
-            <= self._policy.maximum_duration_days
+            self._policy.minimum_duration_days <= duration <= self._policy.maximum_duration_days
         ):
             return False
         notional = quote.issue_notional_rub
@@ -414,8 +402,7 @@ class BondCandidateScreener:
             return False
         lot_cost = quote.estimated_lot_cost_rub
         return not (
-            lot_cost is None
-            or lot_cost > cash_rub * self._policy.maximum_lot_share_of_cash
+            lot_cost is None or lot_cost > cash_rub * self._policy.maximum_lot_share_of_cash
         )
 
     def _detail_eligible(self, facts: Any) -> bool:
@@ -450,9 +437,7 @@ def _candidate_market_report(
             emitter_id=emitter_id,
             emitter_name=issuer_names[emitter_id],
             value_rub=issuer_value,
-            share_of_covered_bonds=(
-                Decimal("0") if value == 0 else issuer_value / value
-            ),
+            share_of_covered_bonds=(Decimal("0") if value == 0 else issuer_value / value),
             issues=tuple(sorted(issuer_issues[emitter_id])),
         )
         for emitter_id, issuer_value in sorted(issuer_values.items())

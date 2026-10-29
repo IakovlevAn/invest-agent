@@ -329,8 +329,7 @@ def main(argv: list[str] | None = None) -> int:
                 "as_of": snapshot.as_of.isoformat(),
                 "selected_t0_cash_rub": str(snapshot.cash_rub),
                 "cash_by_settlement_term_rub": {
-                    term: str(value)
-                    for term, value in session.cash_by_settlement_term_rub
+                    term: str(value) for term, value in session.cash_by_settlement_term_rub
                 },
             }
             if args.format == "json":
@@ -439,9 +438,7 @@ def main(argv: list[str] | None = None) -> int:
                     include_planned_sale_proceeds=not args.current_cash_only,
                     cash_override_rub=proposal_cash_rub,
                     excluded_buy_isins={
-                        isin.strip().upper()
-                        for isin in args.exclude_buy_isin
-                        if isin.strip()
+                        isin.strip().upper() for isin in args.exclude_buy_isin if isin.strip()
                     },
                 )
                 actions = _parse_exact_actions(args)
@@ -474,8 +471,7 @@ def main(argv: list[str] | None = None) -> int:
                             ),
                         }
                         for decision in report.decisions
-                        if decision.recommended_add_rub > 0
-                        or decision.recommended_reduce_rub > 0
+                        if decision.recommended_add_rub > 0 or decision.recommended_reduce_rub > 0
                     ],
                     "new": [
                         {
@@ -537,21 +533,19 @@ def main(argv: list[str] | None = None) -> int:
                 )
             payload = report.as_dict()
             payload["bcs_trade_checks"] = [check.as_dict() for check in checks]
-            payload["bond_income"] = bond_income_as_dict(
-                session.bond_income_summary
-            )
+            payload["bond_income"] = bond_income_as_dict(session.bond_income_summary)
             dynamics = PortfolioAssetDynamicsAnalyzer(MoexIssClient()).analyze(
                 snapshot,
                 bonds,
             )
             payload["asset_dynamics"] = dynamics.as_dict()
             try:
-                rate_report = BondRateModel(
-                    RateScenarioPolicy.from_toml(POLICY_FILE)
-                ).analyze(bonds, CbrKeyRateClient().fetch())
+                rate_report = BondRateModel(RateScenarioPolicy.from_toml(POLICY_FILE)).analyze(
+                    bonds, CbrKeyRateClient().fetch()
+                )
                 payload["rate_model"] = rate_report.as_dict()
-                payload["bond_income"]["forward_market_estimate"] = (
-                    _forward_bond_income(report, rate_report)
+                payload["bond_income"]["forward_market_estimate"] = _forward_bond_income(
+                    report, rate_report
                 )
             except CbrKeyRateError as error:
                 rate_report = None
@@ -633,9 +627,7 @@ def _configured_path_from_local_env(
     try:
         lines = env_file.read_text(encoding="utf-8").splitlines()
     except OSError as error:
-        raise SecretStoreError(
-            f"Локальный .env с путём к {token_label} не найден"
-        ) from error
+        raise SecretStoreError(f"Локальный .env с путём к {token_label} не найден") from error
 
     configured: list[str] = []
     for line in lines:
@@ -646,9 +638,7 @@ def _configured_path_from_local_env(
         if separator and key.strip() == key_name:
             configured.append(value.strip().strip('"').strip("'"))
     if len(configured) != 1 or not configured[0]:
-        raise SecretStoreError(
-            f"В .env должен быть ровно один {key_name}"
-        )
+        raise SecretStoreError(f"В .env должен быть ровно один {key_name}")
 
     path = Path(configured[0]).expanduser()
     return path if path.is_absolute() else PROJECT_ROOT / path
@@ -732,8 +722,7 @@ def _apply_bcs_manager_constraints(
         buy_lot_cost_rub={
             check.isin: lot_cost
             for check in preliminary_checks
-            if check.side is Side.BUY
-            and (lot_cost := _bcs_buy_lot_cost(check)) is not None
+            if check.side is Side.BUY and (lot_cost := _bcs_buy_lot_cost(check)) is not None
         },
     )
     checks = verifier.verify_manager_actions(constrained, access_token)
@@ -773,11 +762,7 @@ def _render_recommendation_additions(
     elif not checks:
         lines.append("- нет действий с положительной суммой для точной проверки")
     for check in checks:
-        status = (
-            "доступен в справочнике"
-            if check.broker_catalog_available
-            else "заблокирован"
-        )
+        status = "доступен в справочнике" if check.broker_catalog_available else "заблокирован"
         line = (
             f"- {check.side.value} {check.isin}: {status}; "
             f"лот {check.lot_size or 'н/д'}; сессия "
@@ -815,15 +800,11 @@ def _estimate_bond_action(check) -> tuple[int, int, Decimal, Decimal] | None:
         or check.lot_size <= 0
     ):
         return None
-    dirty_unit_cost = (
-        check.face_value * price / Decimal("100") + check.accrued_interest
-    )
+    dirty_unit_cost = check.face_value * price / Decimal("100") + check.accrued_interest
     if dirty_unit_cost <= 0:
         return None
     units_by_amount = int(
-        (check.target_amount_rub / dirty_unit_cost).to_integral_value(
-            rounding=ROUND_FLOOR
-        )
+        (check.target_amount_rub / dirty_unit_cost).to_integral_value(rounding=ROUND_FLOOR)
     )
     lots = units_by_amount // check.lot_size
     if lots <= 0:
@@ -841,10 +822,7 @@ def _bcs_buy_lot_cost(check) -> Decimal | None:
         or check.lot_size <= 0
     ):
         return None
-    dirty_unit_cost = (
-        check.face_value * check.offer / Decimal("100")
-        + check.accrued_interest
-    )
+    dirty_unit_cost = check.face_value * check.offer / Decimal("100") + check.accrued_interest
     if dirty_unit_cost <= 0:
         return None
     return dirty_unit_cost * check.lot_size
@@ -861,47 +839,27 @@ def _buy_bond_details(proposal) -> list[dict[str, object]]:
         schedule = moex.fetch_bond_schedule(isin)
         market = bond.market
         today = schedule.fetched_at.date()
-        coupons = [
-            coupon for coupon in schedule.coupons if coupon.coupon_date >= today
-        ]
-        amortizations = [
-            item
-            for item in schedule.amortizations
-            if item.amortization_date >= today
-        ]
+        coupons = [coupon for coupon in schedule.coupons if coupon.coupon_date >= today]
+        amortizations = [item for item in schedule.amortizations if item.amortization_date >= today]
         next_coupon = coupons[0] if coupons else None
         coupon_window_end = today + timedelta(days=365)
-        coupons_next_12m = [
-            coupon
-            for coupon in coupons
-            if coupon.coupon_date <= coupon_window_end
-        ]
+        coupons_next_12m = [coupon for coupon in coupons if coupon.coupon_date <= coupon_window_end]
         amortizations_next_12m = [
-            item
-            for item in amortizations
-            if item.amortization_date <= coupon_window_end
+            item for item in amortizations if item.amortization_date <= coupon_window_end
         ]
         coupon_per_unit = bond.facts.coupon_value
         if coupon_per_unit is None and next_coupon is not None:
             coupon_per_unit = next_coupon.value_rub or next_coupon.value
         frequency = bond.facts.coupon_frequency
         annual_coupon_per_unit = (
-            None
-            if coupon_per_unit is None or frequency is None
-            else coupon_per_unit * frequency
+            None if coupon_per_unit is None or frequency is None else coupon_per_unit * frequency
         )
         face_value = bond.facts.face_value
         dirty_per_unit = order.estimated_cash_rub / Decimal(order.quantity_units)
         clean_per_unit = (
-            None
-            if face_value is None
-            else face_value * order.limit_price / Decimal("100")
+            None if face_value is None else face_value * order.limit_price / Decimal("100")
         )
-        accrued_per_unit = (
-            None
-            if clean_per_unit is None
-            else dirty_per_unit - clean_per_unit
-        )
+        accrued_per_unit = None if clean_per_unit is None else dirty_per_unit - clean_per_unit
         details.append(
             {
                 "isin": isin,
@@ -913,15 +871,11 @@ def _buy_bond_details(proposal) -> list[dict[str, object]]:
                 "accrued_income_rub_per_unit": _decimal_or_none(accrued_per_unit),
                 "dirty_price_rub_per_unit": format(dirty_per_unit, "f"),
                 "dirty_purchase_cash_rub": format(order.estimated_cash_rub, "f"),
-                "coupon_rate_percent": _decimal_or_none(
-                    bond.facts.coupon_percent
-                ),
+                "coupon_rate_percent": _decimal_or_none(bond.facts.coupon_percent),
                 "coupon_rub_per_unit": _decimal_or_none(coupon_per_unit),
                 "coupon_payments_per_year": frequency,
                 "next_coupon_date": (
-                    None
-                    if next_coupon is None
-                    else next_coupon.coupon_date.isoformat()
+                    None if next_coupon is None else next_coupon.coupon_date.isoformat()
                 ),
                 "next_coupon_cash_for_order_rub": (
                     None
@@ -953,8 +907,7 @@ def _buy_bond_details(proposal) -> list[dict[str, object]]:
                 "scheduled_principal_cash_next_12m_for_order_rub": format(
                     sum(
                         (
-                            (item.value_rub or item.value or Decimal("0"))
-                            * order.quantity_units
+                            (item.value_rub or item.value or Decimal("0")) * order.quantity_units
                             for item in amortizations_next_12m
                         ),
                         Decimal("0"),
@@ -964,37 +917,27 @@ def _buy_bond_details(proposal) -> list[dict[str, object]]:
                 "effective_yield_percent": _decimal_or_none(
                     None if market is None else market.effective_yield_percent
                 ),
-                "duration_days": _decimal_or_none(
-                    None if market is None else market.duration_days
-                ),
+                "duration_days": _decimal_or_none(None if market is None else market.duration_days),
                 "maturity_date": (
                     None
                     if bond.facts.maturity_date is None
                     else bond.facts.maturity_date.isoformat()
                 ),
                 "offer_date": (
-                    None
-                    if bond.facts.offer_date is None
-                    else bond.facts.offer_date.isoformat()
+                    None if bond.facts.offer_date is None else bond.facts.offer_date.isoformat()
                 ),
                 "next_coupons": [
                     {
                         "date": coupon.coupon_date.isoformat(),
-                        "rub_per_unit": _decimal_or_none(
-                            coupon.value_rub or coupon.value
-                        ),
+                        "rub_per_unit": _decimal_or_none(coupon.value_rub or coupon.value),
                     }
                     for coupon in coupons[:3]
                 ],
                 "next_amortizations": [
                     {
                         "date": item.amortization_date.isoformat(),
-                        "rub_per_unit": _decimal_or_none(
-                            item.value_rub or item.value
-                        ),
-                        "percent_of_initial_face": _decimal_or_none(
-                            item.value_percent
-                        ),
+                        "rub_per_unit": _decimal_or_none(item.value_rub or item.value),
+                        "percent_of_initial_face": _decimal_or_none(item.value_percent),
                     }
                     for item in amortizations[:3]
                 ],
@@ -1005,7 +948,8 @@ def _buy_bond_details(proposal) -> list[dict[str, object]]:
                 },
                 "limitations": [
                     "Coupon schedule may change for floaters or after issuer actions.",
-                    "Effective yield is annualized and assumes scheduled payments; taxes, fees and reinvestment are excluded.",
+                    "Effective yield is annualized and assumes scheduled payments; "
+                    "taxes, fees and reinvestment are excluded.",
                 ],
             }
         )
@@ -1041,19 +985,13 @@ def _public_order_list_payload(payload: dict[str, object]) -> dict[str, object]:
 
 
 def _forward_bond_income(report, rate_report) -> dict[str, object]:
-    comparable_value = (
-        report.bond_value_rub * report.comparable_yield_coverage_share
-    )
+    comparable_value = report.bond_value_rub * report.comparable_yield_coverage_share
     comparable_income = Decimal("0")
     if report.current_comparable_bond_yield_percent is not None:
         comparable_income = (
-            comparable_value
-            * report.current_comparable_bond_yield_percent
-            / Decimal("100")
+            comparable_value * report.current_comparable_bond_yield_percent / Decimal("100")
         )
-    decision_values = {
-        decision.isin: decision.market_value_rub for decision in report.decisions
-    }
+    decision_values = {decision.isin: decision.market_value_rub for decision in report.decisions}
     scenarios: dict[str, dict[str, object]] = {}
     for sensitivity in rate_report.bonds:
         if sensitivity.model_type != "KEY_RATE_FLOATER":
@@ -1070,10 +1008,7 @@ def _forward_bond_income(report, rate_report) -> dict[str, object]:
                     "gross_annual_rub": comparable_income,
                 },
             )
-            bucket["gross_annual_rub"] = (
-                bucket["gross_annual_rub"]
-                + value * carry / Decimal("100")
-            )
+            bucket["gross_annual_rub"] = bucket["gross_annual_rub"] + value * carry / Decimal("100")
     normalized: dict[str, dict[str, str]] = {}
     for code, bucket in scenarios.items():
         gross = bucket["gross_annual_rub"]
@@ -1092,8 +1027,10 @@ def _forward_bond_income(report, rate_report) -> dict[str, object]:
         "comparable_fixed_gross_annual_rub": format(comparable_income, "f"),
         "scenarios": normalized,
         "limitations": [
-            "Market yield and floater carry are forward-looking annualized estimates, not realized profit.",
-            "Taxes, broker fees, defaults, calls, reinvestment and future spread changes are excluded.",
+            "Market yield and floater carry are forward-looking annualized estimates, "
+            "not realized profit.",
+            "Taxes, broker fees, defaults, calls, reinvestment "
+            "and future spread changes are excluded.",
         ],
     }
 

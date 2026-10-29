@@ -147,9 +147,7 @@ class BondPortfolioEnricherTests(unittest.TestCase):
         payload = json.loads(render_bond_report_json(report))
         self.assertEqual(payload["execution_state"], "ANALYSIS_ONLY")
         self.assertEqual(
-            payload["positions"][0]["market"]["yield"][
-                "comparable_effective_yield_percent"
-            ],
+            payload["positions"][0]["market"]["yield"]["comparable_effective_yield_percent"],
             "24",
         )
 
