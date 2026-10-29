@@ -290,9 +290,7 @@ class ExactPackageExecutorTests(unittest.TestCase):
                 now=(clock.now if clock else lambda: NOW),
             ).confirm_semantic(
                 proposal_digest=package.digest,
-                user_message=(
-                    "Подтверждаю выставление всех предложенных заявок"
-                ),
+                user_message=("Подтверждаю выставление всех предложенных заявок"),
             )
         events: list[str] = []
         trade = trade_client or FakeTradeClient(events)

@@ -279,11 +279,7 @@ class CreditPortfolioAnalyzer:
             passports.append(passport)
 
         covered_value = sum(
-            (
-                passport.market_value_rub
-                for passport in passports
-                if passport.current_ratings
-            ),
+            (passport.market_value_rub for passport in passports if passport.current_ratings),
             start=Decimal("0"),
         )
         return CreditPortfolioReport(
@@ -348,8 +344,7 @@ def render_credit_report_text(report: CreditPortfolioReport) -> str:
     ]
     for passport in report.passports:
         lines.append(
-            f"- {passport.ticker} · {passport.emitter_name} · "
-            f"{passport.market_value_rub:,.2f} ₽"
+            f"- {passport.ticker} · {passport.emitter_name} · {passport.market_value_rub:,.2f} ₽"
         )
         if passport.ratings:
             for rating in passport.ratings:
@@ -391,9 +386,7 @@ def _issuer_actions(
     if inn is None:
         return ()
     return _latest_actions(
-        action
-        for action in actions
-        if action.inn == inn and action.isin is None
+        action for action in actions if action.inn == inn and action.isin is None
     )
 
 
@@ -402,9 +395,7 @@ def _issue_actions(
     isin: str,
 ) -> tuple[CbrRatingAction, ...]:
     return _latest_actions(
-        action
-        for action in actions
-        if action.isin is not None and action.isin.upper() == isin
+        action for action in actions if action.isin is not None and action.isin.upper() == isin
     )
 
 
@@ -503,8 +494,7 @@ def _passport(
             )
         )
     if current and all(
-        as_of - rating.action.release_date > timedelta(days=max_age_days)
-        for rating in current
+        as_of - rating.action.release_date > timedelta(days=max_age_days) for rating in current
     ):
         signals.append(
             CreditSignal(
@@ -556,8 +546,7 @@ def _passport(
                 code="UNRECOGNIZED_RATING_SCALE",
                 severity=SignalSeverity.INFO,
                 message=(
-                    "текущий рейтинг есть, но его шкала не поддержана "
-                    "диагностическим маппингом"
+                    "текущий рейтинг есть, но его шкала не поддержана диагностическим маппингом"
                 ),
             )
         )

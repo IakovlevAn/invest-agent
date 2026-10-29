@@ -152,9 +152,7 @@ class BcsPortfolioNormalizer:
             term = self._required_text(raw, "term", index).upper()
             current_value_rub = self._decimal(raw, "currentValueRub", index)
             if current_value_rub < 0:
-                raise PortfolioContractError(
-                    f"positions[{index}] contains negative cash"
-                )
+                raise PortfolioContractError(f"positions[{index}] contains negative cash")
             cash[term] += current_value_rub
         return dict(sorted(cash.items()))
 
@@ -198,9 +196,7 @@ class BcsPortfolioNormalizer:
                     "cost_basis_rub": cost_value,
                     "unrealized_pl_rub": unrealized,
                     "unrealized_return_percent": (
-                        None
-                        if cost_value == 0
-                        else unrealized / cost_value * Decimal("100")
+                        None if cost_value == 0 else unrealized / cost_value * Decimal("100")
                     ),
                     "daily_pl_rub": daily_pl,
                     "accrued_income_rub": accrued,
@@ -217,9 +213,7 @@ class BcsPortfolioNormalizer:
             "cost_basis_rub": cost_total,
             "unrealized_pl_rub": unrealized_total,
             "unrealized_return_percent": (
-                None
-                if cost_total == 0
-                else unrealized_total / cost_total * Decimal("100")
+                None if cost_total == 0 else unrealized_total / cost_total * Decimal("100")
             ),
             "daily_pl_rub": daily_total,
             "accrued_income_rub": accrued_total,
@@ -344,9 +338,7 @@ def bond_income_as_dict(summary: Mapping[str, Any]) -> dict[str, Any]:
         "current_value_rub": _optional_decimal_text(summary["current_value_rub"]),
         "cost_basis_rub": _optional_decimal_text(summary["cost_basis_rub"]),
         "unrealized_pl_rub": _optional_decimal_text(summary["unrealized_pl_rub"]),
-        "unrealized_return_percent": _optional_decimal_text(
-            summary["unrealized_return_percent"]
-        ),
+        "unrealized_return_percent": _optional_decimal_text(summary["unrealized_return_percent"]),
         "daily_pl_rub": _optional_decimal_text(summary["daily_pl_rub"]),
         "accrued_income_rub": _optional_decimal_text(summary["accrued_income_rub"]),
         "positions": [

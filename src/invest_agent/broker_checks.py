@@ -85,12 +85,8 @@ class BcsTradeVerifier:
                         decision.recommended_reduce_rub,
                     )
                 )
-            if (
-                decision.action is ManagerAction.ADD_CANDIDATE
-                and (
-                    decision.recommended_add_rub > 0
-                    or include_unallocated_buys
-                )
+            if decision.action is ManagerAction.ADD_CANDIDATE and (
+                decision.recommended_add_rub > 0 or include_unallocated_buys
             ):
                 intents.append(
                     (
@@ -122,8 +118,7 @@ class BcsTradeVerifier:
         by_isin = {instrument.isin: instrument for instrument in instruments}
         quote_pairs = tuple(
             dict.fromkeys(
-                (instrument.ticker, instrument.primary_board)
-                for instrument in instruments
+                (instrument.ticker, instrument.primary_board) for instrument in instruments
             )
         )
         quotes = self._client.fetch_quotes(access_token, quote_pairs) if quote_pairs else ()
@@ -173,44 +168,32 @@ def _build_check(
             last=None,
             broker_catalog_available=False,
             trading_is_open=False,
-            blockers=(
-                "выпуск не найден в аутентифицированном справочнике БКС",
-            ),
+            blockers=("выпуск не найден в аутентифицированном справочнике БКС",),
         )
 
     quote = quotes.get((instrument.ticker, instrument.primary_board))
     blockers: list[str] = []
     if not instrument.is_ruble_bond:
-        blockers.append(
-            "инструмент БКС не является рублёвой облигацией"
-        )
+        blockers.append("инструмент БКС не является рублёвой облигацией")
     if instrument.is_blocked:
-        blockers.append(
-            "класс инструмента заблокирован в справочнике БКС"
-        )
+        blockers.append("класс инструмента заблокирован в справочнике БКС")
     if side is Side.BUY and (
         instrument.is_qualified_only or not instrument.available_for_unqualified
     ):
-        blockers.append(
-            "покупка недоступна неквалифицированному инвестору"
-        )
+        blockers.append("покупка недоступна неквалифицированному инвестору")
     if instrument.lot_size <= 0:
         blockers.append("БКС вернул некорректный размер лота")
     if instrument.minimum_step <= 0:
         blockers.append("БКС вернул некорректный шаг цены")
     if quote is None:
-        blockers.append(
-            "БКС не вернул котировку для основного режима"
-        )
+        blockers.append("БКС не вернул котировку для основного режима")
     elif quote.currency != "RUB":
         blockers.append("котировка БКС не в рублях")
 
     catalog_available = not blockers
     trading_is_open = bool(quote and quote.trading_is_open)
     if quote is not None and not trading_is_open:
-        blockers.append(
-            "торговая сессия по выпуску сейчас закрыта"
-        )
+        blockers.append("торговая сессия по выпуску сейчас закрыта")
     return BcsTradeCheck(
         isin=isin,
         recommendation_ticker=recommendation_ticker,

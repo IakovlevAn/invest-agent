@@ -298,8 +298,7 @@ class BcsReadClient:
             raise ValueError("between one and 100 BCS instruments are required")
         body = {
             "instruments": [
-                {"ticker": ticker, "classCode": class_code}
-                for ticker, class_code in normalized
+                {"ticker": ticker, "classCode": class_code} for ticker, class_code in normalized
             ]
         }
         response = self._request_with_retry(
@@ -314,8 +313,7 @@ class BcsReadClient:
         if not isinstance(records, list):
             raise BcsApiError("quotes-invalid-contract", response.status)
         return tuple(
-            self._parse_quote(item, response.status, index)
-            for index, item in enumerate(records)
+            self._parse_quote(item, response.status, index) for index, item in enumerate(records)
         )
 
     def fetch_order_book(
@@ -462,9 +460,7 @@ class BcsReadClient:
             accrued_interest=cls._required_decimal(payload, "accruedInt", operation, status),
             scale=scale,
             is_blocked=cls._required_bool(payload, "isBlocked", operation, status),
-            is_qualified_only=cls._required_bool(
-                payload, "isQualifiedOnly", operation, status
-            ),
+            is_qualified_only=cls._required_bool(payload, "isQualifiedOnly", operation, status),
             available_for_unqualified=cls._required_bool(
                 payload, "availableForUnqualified", operation, status
             ),

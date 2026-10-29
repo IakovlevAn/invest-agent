@@ -59,9 +59,7 @@ class AssetPriceDynamics:
             "market_value_rub": _decimal_text(self.market_value_rub),
             "current_price": _decimal_text(self.current_price),
             "current_price_unit": self.current_price_unit,
-            "changes": {
-                f"{change.days}d": change.as_dict() for change in self.changes
-            },
+            "changes": {f"{change.days}d": change.as_dict() for change in self.changes},
             "signal": self.signal,
             "source_url": self.source_url,
             "limitation": self.limitation,
@@ -76,11 +74,7 @@ class PortfolioAssetDynamicsReport:
     failures: tuple[str, ...]
 
     def as_dict(self) -> dict[str, Any]:
-        alerts = [
-            asset
-            for asset in self.assets
-            if asset.signal in {"WATCH", "REVIEW", "SEVERE"}
-        ]
+        alerts = [asset for asset in self.assets if asset.signal in {"WATCH", "REVIEW", "SEVERE"}]
         return {
             "portfolio_as_of": self.portfolio_as_of,
             "fetched_at": self.fetched_at,
@@ -105,9 +99,7 @@ class PortfolioAssetDynamicsAnalyzer:
         snapshot: PortfolioSnapshot,
         bonds: BondMarketReport,
     ) -> PortfolioAssetDynamicsReport:
-        bond_records = {
-            record.position.instrument_uid: record for record in bonds.positions
-        }
+        bond_records = {record.position.instrument_uid: record for record in bonds.positions}
         assets: list[AssetPriceDynamics] = []
         failures: list[str] = []
         observed_date = snapshot.as_of.astimezone(MOSCOW_TZ).date()
@@ -158,9 +150,7 @@ class PortfolioAssetDynamicsAnalyzer:
                         signal=_signal(changes),
                         source_url=history.source_url,
                         limitation=(
-                            None
-                            if changes
-                            else "MOEX returned no comparable historical close"
+                            None if changes else "MOEX returned no comparable historical close"
                         ),
                     )
                 )
@@ -170,9 +160,7 @@ class PortfolioAssetDynamicsAnalyzer:
         return PortfolioAssetDynamicsReport(
             portfolio_as_of=snapshot.as_of.isoformat(),
             fetched_at=fetched_at.isoformat(),
-            assets=tuple(
-                sorted(assets, key=lambda item: (-item.market_value_rub, item.ticker))
-            ),
+            assets=tuple(sorted(assets, key=lambda item: (-item.market_value_rub, item.ticker))),
             failures=tuple(failures),
         )
 
@@ -226,20 +214,19 @@ def _window_change(
         days=days,
         reference_date=reference.trade_date.isoformat(),
         reference_price=reference.close_price,
-        change_percent=(current_price / reference.close_price - Decimal("1"))
-        * Decimal("100"),
+        change_percent=(current_price / reference.close_price - Decimal("1")) * Decimal("100"),
     )
 
 
 def _signal(changes: tuple[PriceWindowChange, ...]) -> str:
     by_days = {change.days: change.change_percent for change in changes}
-    if by_days.get(7, Decimal("0")) <= Decimal("-5") or by_days.get(
-        30, Decimal("0")
-    ) <= Decimal("-10"):
+    if by_days.get(7, Decimal("0")) <= Decimal("-5") or by_days.get(30, Decimal("0")) <= Decimal(
+        "-10"
+    ):
         return "SEVERE"
-    if by_days.get(7, Decimal("0")) <= Decimal("-2") or by_days.get(
-        30, Decimal("0")
-    ) <= Decimal("-5"):
+    if by_days.get(7, Decimal("0")) <= Decimal("-2") or by_days.get(30, Decimal("0")) <= Decimal(
+        "-5"
+    ):
         return "REVIEW"
     if (
         by_days.get(7, Decimal("0")) <= Decimal("-1")
