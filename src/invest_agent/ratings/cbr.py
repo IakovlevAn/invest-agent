@@ -22,8 +22,7 @@ from invest_agent.http import HttpResponse
 
 CBR_RATINGS_URL = "https://ratings.cbr.ru/"
 CBR_ACTION_URL = (
-    "https://ratings.cbr.ru/bitrix/services/main/ajax.php"
-    "?mode=ajax&c=prr.form&action={action}"
+    "https://ratings.cbr.ru/bitrix/services/main/ajax.php?mode=ajax&c=prr.form&action={action}"
 )
 _CSRF_PATTERN = re.compile(r'bitrix_sessid"\s*:\s*"([a-fA-F0-9]{32})"')
 _CAPTCHA_MARKERS = (
@@ -373,8 +372,4 @@ def _is_observed_no_results(payload: Mapping[str, Any]) -> bool:
     if payload.get("data") is not None or not isinstance(errors, list) or len(errors) != 1:
         return False
     error = errors[0]
-    return (
-        isinstance(error, dict)
-        and error.get("code") == 0
-        and error.get("message") == "Array"
-    )
+    return isinstance(error, dict) and error.get("code") == 0 and error.get("message") == "Array"

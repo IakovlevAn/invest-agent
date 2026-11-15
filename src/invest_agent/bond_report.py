@@ -107,9 +107,7 @@ class BondMarketReport:
                 "enriched_positions": len(self.positions),
                 "bond_value_rub": _decimal_text(self.bond_value_rub),
                 "covered_bond_value_rub": _decimal_text(self.covered_bond_value_rub),
-                "market_covered_bond_value_rub": _decimal_text(
-                    self.market_covered_bond_value_rub
-                ),
+                "market_covered_bond_value_rub": _decimal_text(self.market_covered_bond_value_rub),
                 "issue_share": _decimal_text(self.issue_coverage_share),
                 "market_share": _decimal_text(self.market_coverage_share),
                 "issuer_share": _decimal_text(self.issuer_coverage_share),
@@ -126,9 +124,7 @@ class BondMarketReport:
                         "emitter_id": exposure.emitter_id,
                         "emitter_name": exposure.emitter_name,
                         "value_rub": _decimal_text(exposure.value_rub),
-                        "share_of_covered_bonds": _decimal_text(
-                            exposure.share_of_covered_bonds
-                        ),
+                        "share_of_covered_bonds": _decimal_text(exposure.share_of_covered_bonds),
                         "issues": list(exposure.issues),
                     }
                     for exposure in self.issuer_exposures
@@ -262,9 +258,7 @@ def render_bond_report_json(report: BondMarketReport) -> str:
 
 def render_bond_report_text(report: BondMarketReport) -> str:
     effective_count = (
-        "н/д"
-        if report.effective_issuer_count is None
-        else f"{report.effective_issuer_count:.2f}"
+        "н/д" if report.effective_issuer_count is None else f"{report.effective_issuer_count:.2f}"
     )
     lines = [
         f"Облигации MOEX для {report.account_ref}",
@@ -423,9 +417,7 @@ def _position_as_dict(record: EnrichedBondPosition) -> dict[str, Any]:
             "coupon_value": _optional_decimal_text(facts.coupon_value),
             "coupon_frequency": facts.coupon_frequency,
             "coupon_benchmark": facts.coupon_benchmark,
-            "coupon_benchmark_spread": _optional_decimal_text(
-                facts.coupon_benchmark_spread
-            ),
+            "coupon_benchmark_spread": _optional_decimal_text(facts.coupon_benchmark_spread),
             "next_coupon_date": _date_text(facts.next_coupon_date),
             "offer_date": _date_text(facts.offer_date),
             "bond_type": facts.bond_type,
@@ -478,9 +470,7 @@ def _market_as_dict(
             "moex_effective_yield_raw_percent": _optional_decimal_text(
                 market.effective_yield_percent
             ),
-            "moex_yield_at_wap_raw_percent": _optional_decimal_text(
-                market.yield_at_wap_percent
-            ),
+            "moex_yield_at_wap_raw_percent": _optional_decimal_text(market.yield_at_wap_percent),
         },
         "yield_date": _date_text(market.yield_date),
         "yield_date_type": market.yield_date_type,

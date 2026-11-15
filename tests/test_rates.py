@@ -7,8 +7,8 @@ from pathlib import Path
 
 from invest_agent.http import HttpResponse
 from invest_agent.rates import (
-    BondRateModel,
     CBR_KEY_RATE_URL,
+    BondRateModel,
     CbrKeyRateClient,
     KeyRateObservation,
     RateScenario,
@@ -33,9 +33,7 @@ class FakeTransport:
 class RateModelTests(unittest.TestCase):
     def test_recognizes_moex_key_rate_benchmark_code(self) -> None:
         self.assertTrue(is_key_rate_benchmark("RREFKEYR"))
-        self.assertTrue(
-            is_key_rate_benchmark("Ключевая ставка Банка России")
-        )
+        self.assertTrue(is_key_rate_benchmark("Ключевая ставка Банка России"))
         self.assertFalse(is_key_rate_benchmark("RUONIA"))
 
     def test_reads_latest_key_rate_from_official_table_contract(self) -> None:

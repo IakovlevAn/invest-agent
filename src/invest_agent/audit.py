@@ -70,9 +70,7 @@ class PortfolioAudit:
             "values": {
                 "total_value_rub": _decimal_text(self.total_value_rub),
                 "managed_value_rub": _decimal_text(self.managed_value_rub),
-                "managed_securities_value_rub": _decimal_text(
-                    self.managed_securities_value_rub
-                ),
+                "managed_securities_value_rub": _decimal_text(self.managed_securities_value_rub),
                 "blocked_value_rub": _decimal_text(self.blocked_value_rub),
                 "cash_rub": _decimal_text(self.cash_rub),
             },
@@ -144,13 +142,9 @@ class PortfolioAuditor:
         self._top_positions = top_positions
 
     def audit(self, snapshot: PortfolioSnapshot) -> PortfolioAudit:
-        full_allocation: defaultdict[InstrumentType, Decimal] = defaultdict(
-            lambda: Decimal("0")
-        )
+        full_allocation: defaultdict[InstrumentType, Decimal] = defaultdict(lambda: Decimal("0"))
         full_allocation[InstrumentType.CASH] = snapshot.cash_rub
-        managed_allocation: defaultdict[InstrumentType, Decimal] = defaultdict(
-            lambda: Decimal("0")
-        )
+        managed_allocation: defaultdict[InstrumentType, Decimal] = defaultdict(lambda: Decimal("0"))
         managed_allocation[InstrumentType.CASH] = snapshot.cash_rub
 
         managed_positions: list[Position] = []
@@ -246,8 +240,7 @@ class PortfolioAuditor:
                 name=position.display_name or position.ticker,
                 instrument_type=position.instrument_type,
                 value_rub=position.market_value_rub,
-                share_of_managed_securities=position.market_value_rub
-                / managed_securities_value,
+                share_of_managed_securities=position.market_value_rub / managed_securities_value,
             )
             for position in sorted(
                 positions,
@@ -300,8 +293,7 @@ class PortfolioAuditor:
                     code="BLOCKED_ASSETS_MATERIAL",
                     severity=FindingSeverity.INFO,
                     summary=(
-                        "Существенная доля портфеля находится вне управляемого "
-                        "контура агента."
+                        "Существенная доля портфеля находится вне управляемого контура агента."
                     ),
                 )
             )
@@ -314,9 +306,7 @@ def render_audit_json(audit: PortfolioAudit) -> str:
 
 def render_audit_text(audit: PortfolioAudit) -> str:
     effective_position_count = (
-        "н/д"
-        if audit.effective_position_count is None
-        else f"{audit.effective_position_count:.2f}"
+        "н/д" if audit.effective_position_count is None else f"{audit.effective_position_count:.2f}"
     )
     lines = [
         f"Аудит {audit.account_ref}",

@@ -27,9 +27,7 @@ CREATE_ORDER_URL = "https://be.broker.ru/trade-api-bff-operations/api/v1/orders"
 ORDER_STATUS_URL = CREATE_ORDER_URL
 CANCEL_ORDER_URL = f"{CREATE_ORDER_URL}/cancel"
 ORDER_STATUSES = frozenset({"0", "1", "2", "4", "5", "6", "8", "9", "10"})
-EXECUTION_TYPES = frozenset(
-    {"0", "1", "2", "4", "5", "6", "8", "9", "10", "11", "12", "13"}
-)
+EXECUTION_TYPES = frozenset({"0", "1", "2", "4", "5", "6", "8", "9", "10", "11", "12", "13"})
 
 
 class BcsOrderNotFound(BcsApiError):
@@ -187,9 +185,7 @@ class BcsTradeClient:
     ) -> BcsOrderState:
         self._require_token(access_token, "order-status-token-expired")
         _validated_uuid(client_order_id)
-        query = urllib.parse.urlencode(
-            {"orderIdType": "1", "orderId": client_order_id}
-        )
+        query = urllib.parse.urlencode({"orderIdType": "1", "orderId": client_order_id})
         response = self._request_with_retry(
             operation="order-status",
             method="GET",
@@ -217,12 +213,8 @@ class BcsTradeClient:
                 data, "executionType", EXECUTION_TYPES, response.status
             ),
             order_quantity=self._required_int(data, "orderQuantity", response.status),
-            executed_quantity=self._required_int(
-                data, "executedQuantity", response.status
-            ),
-            remained_quantity=self._required_int(
-                data, "remainedQuantity", response.status
-            ),
+            executed_quantity=self._required_int(data, "executedQuantity", response.status),
+            remained_quantity=self._required_int(data, "remainedQuantity", response.status),
             ticker=self._required_text(data, "ticker", response.status),
             class_code=self._required_text(data, "classCode", response.status),
             side=self._required_choice(data, "side", frozenset({"1", "2"}), response.status),
@@ -232,9 +224,7 @@ class BcsTradeClient:
             price=self._required_decimal(data, "price", response.status),
             currency=self._required_text(data, "currency", response.status).upper(),
             order_id=self._required_text(data, "orderId", response.status),
-            transaction_time=self._required_datetime(
-                data, "transactionTime", response.status
-            ),
+            transaction_time=self._required_datetime(data, "transactionTime", response.status),
             reject_reason=self._optional_text(data, "rejectReason", response.status),
         )
         if state.executed_quantity + state.remained_quantity != state.order_quantity:
@@ -297,9 +287,7 @@ class BcsTradeClient:
         if not 200 <= response.status < 300:
             error_type = self._error_type(response.body)
             trace_id = self._trace_id(response.body)
-            if not_found_is_order and (
-                response.status == 404 or error_type == "NOT_FOUND"
-            ):
+            if not_found_is_order and (response.status == 404 or error_type == "NOT_FOUND"):
                 raise BcsOrderNotFound(operation, response.status, trace_id=trace_id)
             raise BcsApiError(operation, response.status, trace_id=trace_id)
         return response
@@ -346,18 +334,14 @@ class BcsTradeClient:
         return payload
 
     @staticmethod
-    def _required_text(
-        payload: Mapping[str, Any], field: str, status: int
-    ) -> str:
+    def _required_text(payload: Mapping[str, Any], field: str, status: int) -> str:
         value = payload.get(field)
         if not isinstance(value, str) or not value.strip():
             raise BcsApiError("order-status-contract", status)
         return value.strip()
 
     @staticmethod
-    def _optional_text(
-        payload: Mapping[str, Any], field: str, status: int
-    ) -> str | None:
+    def _optional_text(payload: Mapping[str, Any], field: str, status: int) -> str | None:
         value = payload.get(field)
         if value is None or value == "":
             return None
@@ -366,9 +350,7 @@ class BcsTradeClient:
         return value
 
     @staticmethod
-    def _required_enum(
-        payload: Mapping[str, Any], field: str, status: int
-    ) -> str:
+    def _required_enum(payload: Mapping[str, Any], field: str, status: int) -> str:
         value = payload.get(field)
         if isinstance(value, bool) or not isinstance(value, (str, int)):
             raise BcsApiError("order-status-contract", status)
@@ -388,9 +370,7 @@ class BcsTradeClient:
         return value
 
     @staticmethod
-    def _required_int(
-        payload: Mapping[str, Any], field: str, status: int
-    ) -> int:
+    def _required_int(payload: Mapping[str, Any], field: str, status: int) -> int:
         value = payload.get(field)
         if isinstance(value, bool):
             raise BcsApiError("order-status-contract", status)
@@ -403,9 +383,7 @@ class BcsTradeClient:
         return int(parsed)
 
     @staticmethod
-    def _required_decimal(
-        payload: Mapping[str, Any], field: str, status: int
-    ) -> Decimal:
+    def _required_decimal(payload: Mapping[str, Any], field: str, status: int) -> Decimal:
         value = payload.get(field)
         if isinstance(value, bool):
             raise BcsApiError("order-status-contract", status)
@@ -418,9 +396,7 @@ class BcsTradeClient:
         return parsed
 
     @staticmethod
-    def _required_datetime(
-        payload: Mapping[str, Any], field: str, status: int
-    ) -> datetime:
+    def _required_datetime(payload: Mapping[str, Any], field: str, status: int) -> datetime:
         value = payload.get(field)
         if not isinstance(value, str):
             raise BcsApiError("order-status-contract", status)

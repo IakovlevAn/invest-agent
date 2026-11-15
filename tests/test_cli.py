@@ -6,9 +6,9 @@ from pathlib import Path
 
 from invest_agent.cli import (
     PROJECT_ROOT,
-    _public_order_list_payload,
     _configured_path_from_local_env,
     _parse_exact_actions,
+    _public_order_list_payload,
     _token_file_from_local_env,
     build_parser,
 )
@@ -117,8 +117,7 @@ class LocalEnvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             env_file = Path(directory) / ".env"
             env_file.write_text(
-                "IGNORED=value\n"
-                "INVEST_AGENT_TOKEN_FILE=.local/secrets/bcs-readonly-refresh-token\n"
+                "IGNORED=value\nINVEST_AGENT_TOKEN_FILE=.local/secrets/bcs-readonly-refresh-token\n"
             )
 
             path = _token_file_from_local_env(env_file)

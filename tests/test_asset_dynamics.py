@@ -4,13 +4,12 @@ import unittest
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+from test_manager import bond, inputs, rating
+
 from invest_agent.asset_dynamics import PortfolioAssetDynamicsAnalyzer
 from invest_agent.credit import RatingBand
 from invest_agent.domain import InstrumentType, PortfolioSnapshot, Position
 from invest_agent.market.moex import MoexPriceHistory, MoexPricePoint
-
-from test_manager import bond, inputs, rating
-
 
 NOW = datetime(2026, 8, 8, 16, 0, tzinfo=UTC)
 
