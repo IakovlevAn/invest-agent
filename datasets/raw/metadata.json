@@ -1,0 +1,8 @@
+{
+  "source_url": "https://iss.moex.com/iss/engines/stock/markets/bonds/securities.json?iss.meta=off&iss.only=securities,marketdata,marketdata_yields",
+  "retrieved_date": "2026-11-15",
+  "saved_file_mtime_utc": "2026-11-15T17:21:53.106531+00:00",
+  "mtime_note": "File modification timestamp recorded after acquisition; source observation times are in the raw payload.",
+  "sha256": "97f9e10ab9841e75d310f11a06180463f7f5aa5b08c7a46d6f9f849547d5da5f",
+  "scope": "Single public market snapshot; no private brokerage records."
+}
