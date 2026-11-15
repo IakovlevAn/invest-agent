@@ -1,0 +1,52 @@
+{
+  "sha256": "97f9e10ab9841e75d310f11a06180463f7f5aa5b08c7a46d6f9f849547d5da5f",
+  "table_rows": {
+    "securities": 3493,
+    "marketdata": 3493,
+    "marketdata_yields": 2519
+  },
+  "unique_secid": 3179,
+  "unique_isin": 3179,
+  "repeated_secid_rows": 314,
+  "missing_percent": {
+    "ISIN": 0.0,
+    "FACEUNIT": 0.0,
+    "MATDATE": 0.0,
+    "VALTODAY_RUR": 6.47,
+    "TRADEMOMENT": 27.884,
+    "EFFECTIVEYIELDWAPRICE": 30.289,
+    "DURATIONWAPRICE": 30.289,
+    "LAST": 50.129,
+    "BID": 100.0,
+    "OFFER": 100.0
+  },
+  "funnel_counts": [
+    3493,
+    2989,
+    1571,
+    1524,
+    0
+  ],
+  "valid_two_sided_quotes": 0,
+  "crossed_quotes": 0,
+  "rub_yield_quantiles": {
+    "0.0": -226.8842,
+    "0.25": 6.13905,
+    "0.5": 15.9997,
+    "0.75": 22.1259,
+    "0.95": 93.91681499999993,
+    "1.0": 5885919.3548
+  },
+  "rub_spread_quantiles_percent": {},
+  "trade_moment_min": "2026-10-15 23:59:59",
+  "trade_moment_max": "2026-11-15 18:59:57",
+  "system_time_min": "2026-11-15 06:42:52",
+  "system_time_max": "2026-11-15 19:15:18",
+  "currency_counts": {
+    "SUR": 2989,
+    "USD": 277,
+    "CNY": 191,
+    "EUR": 32,
+    "CHF": 4
+  }
+}

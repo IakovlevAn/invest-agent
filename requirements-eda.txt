@@ -1,0 +1,3 @@
+# Separate optional EDA environment; no change to trading runtime dependencies.
+pandas==3.1.1
+matplotlib==3.11.2
