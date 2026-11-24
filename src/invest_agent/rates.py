@@ -393,11 +393,7 @@ def is_key_rate_benchmark(value: str | None) -> bool:
     if value is None:
         return False
     normalized = re.sub(r"[^a-zа-я0-9]", "", value.casefold())
-    return (
-        "ключев" in normalized
-        or "keyrate" in normalized
-        or "rrefkeyr" in normalized
-    )
+    return "ключев" in normalized or "keyrate" in normalized or "rrefkeyr" in normalized
 
 
 def _required_text(payload: Mapping[str, Any], field: str) -> str:

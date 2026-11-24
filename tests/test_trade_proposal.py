@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+from test_manager import bond, inputs, rating
+
 from invest_agent.approval import ApprovalViolation
 from invest_agent.brokers.bcs import (
     BcsBoard,
@@ -16,7 +18,7 @@ from invest_agent.brokers.bcs import (
     BcsQuote,
 )
 from invest_agent.credit import CreditSignal, RatingBand, SignalSeverity
-from invest_agent.domain import InstrumentType, PortfolioSnapshot, Side
+from invest_agent.domain import PortfolioSnapshot, Side
 from invest_agent.manager import ManagerPolicy, PortfolioManager
 from invest_agent.policy import InvestmentPolicy
 from invest_agent.trade_proposal import (
@@ -27,7 +29,6 @@ from invest_agent.trade_proposal import (
     proposal_as_dict,
     validate_semantic_confirmation,
 )
-from test_manager import bond, inputs, rating
 
 NOW = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
 POLICY_PATH = Path(__file__).parents[1] / "config" / "investment_policy.toml"
@@ -87,10 +88,7 @@ class FakeBcsClient:
 
 class MultiFakeBcsClient(FakeBcsClient):
     def fetch_instruments_by_isins(self, access_token, isins):
-        return tuple(
-            replace(self.instrument, ticker=isin, isin=isin)
-            for isin in isins
-        )
+        return tuple(replace(self.instrument, ticker=isin, isin=isin) for isin in isins)
 
     def fetch_quotes(self, access_token, instruments):
         template = super().fetch_quotes(access_token, instruments)[0]
@@ -286,9 +284,7 @@ class ExactTradeProposalTests(unittest.TestCase):
 
             receipt = gate.confirm_semantic(
                 proposal_digest=proposal.digest,
-                user_message=(
-                    "Подтверждаю выставление всех предложенных заявок"
-                ),
+                user_message=("Подтверждаю выставление всех предложенных заявок"),
             )
 
             self.assertEqual(receipt.state, "APPROVED_AWAITING_ISOLATED_EXECUTOR")
@@ -296,9 +292,7 @@ class ExactTradeProposalTests(unittest.TestCase):
             with self.assertRaisesRegex(ApprovalViolation, "already confirmed"):
                 gate.confirm_semantic(
                     proposal_digest=proposal.digest,
-                    user_message=(
-                        "Подтверждаю выставление всех предложенных заявок"
-                    ),
+                    user_message=("Подтверждаю выставление всех предложенных заявок"),
                 )
 
     def test_semantic_confirmation_needs_no_digest_and_binds_active_package(self) -> None:

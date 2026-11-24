@@ -323,9 +323,7 @@ class ExactPackageExecutor:
     def _refresh_read_session(
         self,
     ) -> tuple[PortfolioSnapshot, dict[str, Decimal], BcsAccessToken]:
-        pair = self._read_client.exchange_read_only_refresh_token(
-            self._read_token_store.get()
-        )
+        pair = self._read_client.exchange_read_only_refresh_token(self._read_token_store.get())
         self._read_token_store.set(pair.refresh_token)
         raw = self._read_client.fetch_raw_portfolio(pair.access_token)
         return (
@@ -335,9 +333,7 @@ class ExactPackageExecutor:
         )
 
     def _refresh_trade_session(self) -> BcsAccessToken:
-        pair = self._trade_client.exchange_trade_refresh_token(
-            self._trade_token_store.get()
-        )
+        pair = self._trade_client.exchange_trade_refresh_token(self._trade_token_store.get())
         # Rotation is persisted before any order or status call.
         self._trade_token_store.set(pair.refresh_token)
         self._trade_access_token = pair.access_token
@@ -404,8 +400,7 @@ class ExactPackageExecutor:
             ):
                 raise ExecutionViolation("current BCS instrument contract changed")
             if order.side is Side.BUY and (
-                instrument.is_qualified_only
-                or not instrument.available_for_unqualified
+                instrument.is_qualified_only or not instrument.available_for_unqualified
             ):
                 raise ExecutionViolation("approved bond is not available to this investor")
             if order.side is Side.BUY:
@@ -440,10 +435,7 @@ class ExactPackageExecutor:
             if not self._proposal_policy.allow_resting_limit_orders_without_depth:
                 for observed_at in (quote.observed_at, book.observed_at):
                     age = (now - observed_at).total_seconds()
-                    if (
-                        age < -5
-                        or age > self._proposal_policy.maximum_quote_age_seconds
-                    ):
+                    if age < -5 or age > self._proposal_policy.maximum_quote_age_seconds:
                         raise ExecutionViolation("BCS quote or order book is stale")
                 levels = book.asks if order.side is Side.BUY else book.bids
                 executable_units = sum(
@@ -457,13 +449,10 @@ class ExactPackageExecutor:
                 )
                 if executable_units < order.quantity_units:
                     raise ExecutionViolation(
-                        "current BCS order book cannot fill the exact approved quantity at its limit"
+                        "current BCS order book cannot fill the exact approved "
+                        "quantity at its limit"
                     )
-        buy_terms = {
-            _settlement_term(order)
-            for order in proposal.orders
-            if order.side is Side.BUY
-        }
+        buy_terms = {_settlement_term(order) for order in proposal.orders if order.side is Side.BUY}
         if len(buy_terms) > 1:
             raise ExecutionViolation("approved buys use incompatible settlement terms")
         settlement_term = next(iter(buy_terms), "T0")
